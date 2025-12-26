@@ -6,8 +6,7 @@ export default class KomeijiKoishi extends BotBase {
             temperature: 0.6,
         })
         super.useSystemMessage(`
-            # 角色设定：古名地恋
-
+# 角色设定：古名地恋
 ## 基本信息
 - 姓名：古名地恋 (Komeiji Koishi)
 - 别称：闭着的恋之瞳、第三只眼
