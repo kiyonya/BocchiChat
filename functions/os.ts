@@ -4,7 +4,7 @@ import os from 'node:os'
 
 export default class LibOS {
 
-    public static readonly getUserOSInfo = createFunction("os_getUserOSInfo", async () => {
+    public static readonly getUserOSInfo = createFunction("LibOS_getUserOSInfo", async () => {
         const arch = os.arch()
         const platform = os.platform()
         const osRelease = os.release()
@@ -19,7 +19,7 @@ export default class LibOS {
         description: "获取用户的系统信息"
     })
 
-    public static readonly getUserHomeDir = createFunction('os_getUserHomeDir', async () => {
+    public static readonly getUserHomeDir = createFunction('LibOS_getUserHomeDir', async () => {
         const homedir = os.homedir()
         return { homedir }
     })

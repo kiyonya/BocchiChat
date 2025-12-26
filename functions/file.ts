@@ -17,14 +17,16 @@ export type FileReadDirReturns = string[] | null
 
 export default class LibFile {
 
-    public static readonly mkdir = createFunction<FileMkDirParams, FileMkDirReturns>("file_mkdir", async (mkdirOptions) => {
-        const isRecursive = mkdirOptions?.recursive ? booleanTransfer(mkdirOptions.recursive) : true
-        const dir = await fs.promises.mkdir(mkdirOptions.destDir, { recursive: isRecursive })
-        if (dir) {
-            return true
-        }
-        return false
-    }, {
+    public static readonly MakeDirectory = createFunction<FileMkDirParams, FileMkDirReturns>(
+        "LibFile_MakeDirectory",
+        async (mkdirOptions) => {
+            const isRecursive = mkdirOptions?.recursive ? booleanTransfer(mkdirOptions.recursive) : true
+            const dir = await fs.promises.mkdir(mkdirOptions.destDir, { recursive: isRecursive })
+            if (dir) {
+                return true
+            }
+            return false
+        }, {
         parameters: [{
             name: 'destDir',
             type: 'string',
@@ -40,18 +42,20 @@ export default class LibFile {
         description: "使用文件系统在本地创建指定目录，返回布尔值，为true则创建成功"
     })
 
-    public static readonly readdir = createFunction<FileReadDirParams, FileReadDirReturns>("file_readdir", async (readDirOptions) => {
-        const isDirExist = fs.existsSync(readDirOptions.destDir)
-        if (!isDirExist) {
-            throw new Error(`Not Such File Or Directory,reading ${readDirOptions.destDir}`)
-        }
-        const stat = await fs.promises.stat(readDirOptions.destDir)
-        if (!stat.isDirectory()) {
-            throw new Error(`is Not a Directory,reading ${readDirOptions.destDir}`)
-        }
-        const files = await fs.promises.readdir(readDirOptions.destDir)
-        return files
-    }, {
+    public static readonly ReadDirectory = createFunction<FileReadDirParams, FileReadDirReturns>(
+        "LibFile_ReadDirectory",
+        async (readDirOptions) => {
+            const isDirExist = fs.existsSync(readDirOptions.destDir)
+            if (!isDirExist) {
+                throw new Error(`Not Such File Or Directory,reading ${readDirOptions.destDir}`)
+            }
+            const stat = await fs.promises.stat(readDirOptions.destDir)
+            if (!stat.isDirectory()) {
+                throw new Error(`is Not a Directory,reading ${readDirOptions.destDir}`)
+            }
+            const files = await fs.promises.readdir(readDirOptions.destDir)
+            return files
+        }, {
         parameters: [{
             name: 'destDir',
             required: true,
@@ -61,9 +65,11 @@ export default class LibFile {
         description: "读取一个目录下的子目录和文件，返回包含相对路径的数组"
     })
 
-    public static readonly isExist = createFunction<{ destPath: string }, { isExist: boolean }>('file_isExist', async (isExistParams) => {
-        return { isExist: fs.existsSync(isExistParams.destPath) }
-    }, {
+    public static readonly PathExistCheck = createFunction<{ destPath: string }, { isExist: boolean }>(
+        'LibFile_PathExistCheck',
+        async (isExistParams) => {
+            return { isExist: fs.existsSync(isExistParams.destPath) }
+        }, {
         parameters: [{
             name: 'destPath',
             type: 'string',
@@ -73,15 +79,17 @@ export default class LibFile {
         description: "检查一个目录或者文件的路径是否存在，返回 {isExist:boolean} "
     })
 
-    public static readonly pathJoin = createFunction<{ pathes: string[] }, { fullPath: string }>('file_pathJoin', async (joinPathParams) => {
-        for (const p of joinPathParams.pathes) {
-            if (typeof p !== 'string') {
-                throw new Error(`Given path part ${p} is not a string,`)
+    public static readonly JoinPathes = createFunction<{ pathes: string[] }, { fullPath: string }>(
+        'LibFile_JoinPathes',
+        async (joinPathParams) => {
+            for (const p of joinPathParams.pathes) {
+                if (typeof p !== 'string') {
+                    throw new Error(`Given path part ${p} is not a string,`)
+                }
             }
-        }
-        const fullPath = path.join(...joinPathParams.pathes)
-        return { fullPath }
-    }, {
+            const fullPath = path.join(...joinPathParams.pathes)
+            return { fullPath }
+        }, {
         parameters: [{
             name: 'pathes',
             description: '需要合并的路径数组,每一项都应该是一个字符串，如果存在非字符串的元素将会报错',
@@ -91,14 +99,16 @@ export default class LibFile {
         description: "将多个路径进行拼合，拼合成一个完整路径，类似于path.join(),返回{fullPath:string}"
     })
 
-    public static readonly writeTextToFile = createFunction<{ destFile: string, text: string, flag?: string }, { destFile: string }>('file_writeTextToFile', async (writeTextParams) => {
-        const dirname = path.dirname(writeTextParams.destFile)
-        if (!fs.existsSync(dirname)) {
-            fs.mkdirSync(dirname, { recursive: true })
-        }
-        fs.writeFileSync(writeTextParams.destFile, writeTextParams.text, { flag: writeTextParams.flag })
-        return { destFile: writeTextParams.destFile }
-    }, {
+    public static readonly WriteTextToFile = createFunction<{ destFile: string, text: string, flag?: string }, { destFile: string }>(
+        'LibFile_WriteTextToFile',
+        async (writeTextParams) => {
+            const dirname = path.dirname(writeTextParams.destFile)
+            if (!fs.existsSync(dirname)) {
+                fs.mkdirSync(dirname, { recursive: true })
+            }
+            fs.writeFileSync(writeTextParams.destFile, writeTextParams.text, { flag: writeTextParams.flag })
+            return { destFile: writeTextParams.destFile }
+        }, {
         parameters: [{
             name: 'destFile',
             type: 'string',
@@ -119,20 +129,22 @@ export default class LibFile {
         description: "将文本写入特定文件，将会返回{destFile:string}为写入后的文件，写入遇到问题会抛出错误"
     })
 
-    public static readonly readFileAsText = createFunction<{ destFile: string, encoding?: BufferEncoding }, { text: string }>('file_readFileAsText', async (readFileParams) => {
-        const isFileExist = fs.existsSync(readFileParams.destFile)
-        if (!isFileExist) {
-            throw new Error(`Not Such File Or Directory,reading ${readFileParams.destFile}`)
-        }
-        const stat = await fs.promises.stat(readFileParams.destFile)
-        if (!stat.isFile()) {
-            throw new Error(`is Not a File,reading ${readFileParams.destFile}`)
-        }
-        const readResult = await fs.promises.readFile(readFileParams.destFile, { encoding: readFileParams.encoding ?? 'utf-8' })
-        return {
-            text: readResult,
-        }
-    }, {
+    public static readonly ReadTextFromFile = createFunction<{ destFile: string, encoding?: BufferEncoding }, { text: string }>(
+        'LibFile_ReadTextFromFile',
+        async (readFileParams) => {
+            const isFileExist = fs.existsSync(readFileParams.destFile)
+            if (!isFileExist) {
+                throw new Error(`Not Such File Or Directory,reading ${readFileParams.destFile}`)
+            }
+            const stat = await fs.promises.stat(readFileParams.destFile)
+            if (!stat.isFile()) {
+                throw new Error(`is Not a File,reading ${readFileParams.destFile}`)
+            }
+            const readResult = await fs.promises.readFile(readFileParams.destFile, { encoding: readFileParams.encoding ?? 'utf-8' })
+            return {
+                text: readResult,
+            }
+        }, {
         parameters: [{
             name: 'destFile',
             required: true,

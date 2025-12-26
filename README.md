@@ -20,11 +20,7 @@ botChatLine(bot)
 ``` bash
 node index.ts
 ```
-## 预设提示词
-- 雾雨魔理沙（KirisameMarisa）
-- 古明地恋 （KomeijiKoishi）
-- 田所浩二 （迫真 Yajyo）
-- 贴吧网友 （Tieba）
+
 
 ## 使用协议
 本项目使用MIT协议开源，仅作为OpenAI库的封装，不提供AI服务。

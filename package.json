@@ -18,6 +18,7 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "node-downloader-helper": "^2.1.10",
+    "open": "^11.0.0",
     "openai": "^6.15.0"
   }
 }
