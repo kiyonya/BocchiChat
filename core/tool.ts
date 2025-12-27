@@ -9,14 +9,42 @@ export interface ToolParameter<T = any> {
     enum?: any[]
 }
 
-export default class ToolBase<TParams extends Record<string, any> = any, TResult = any> {
+export interface ToolEvents {
+    runtimeEvent:(...args:any[])=>void,
+    
+}
+
+export default class ToolBase<TParams extends Record<string, any> = any, TResult = any> extends EventEmitter{
+
+    on<K extends keyof ToolEvents>(
+    event: K,
+    listener: ToolEvents[K]
+  ): this {
+    return super.on(event as string, listener);
+  }
+
+  once<K extends keyof ToolEvents>(
+    event: K,
+    listener: ToolEvents[K]
+  ): this {
+    return super.once(event as string, listener);
+  }
+
+  emit<K extends keyof ToolEvents>(
+    event: K,
+    ...args: Parameters<(ToolEvents)[K]>
+  ): boolean {
+    return super.emit(event as string, ...args);
+  }
+
     public parameters: ToolParameter<TParams>[] = [];
     public toolName: string = 'default_tool';
     public toolDescription: string = '';
 
-    protected executor: ((params: TParams,callEventEmitter?:EventEmitter) => Promise<TResult>) | null = null;
+    protected executor: ((params: TParams) => Promise<TResult>) | null = null;
 
     constructor(toolName: string) {
+        super()
         this.toolName = toolName;
     }
 
@@ -30,17 +58,17 @@ export default class ToolBase<TParams extends Record<string, any> = any, TResult
         return this;
     }
 
-    public defineExecutor(executor: (params: TParams,callEventEmitter?:EventEmitter) => Promise<TResult>): this {
+    public defineExecutor(executor: (params: TParams) => Promise<TResult>): this {
         this.executor = executor;
         return this;
     }
 
-    public async execute(parameters: TParams,callEventEmitter?:EventEmitter): Promise<TResult> {
+    public async execute(parameters: TParams): Promise<TResult> {
         try {
             this.validateParameters(parameters);
             
             if (this.executor) {
-                return await this.executor(parameters,callEventEmitter);
+                return await this.executor(parameters);
             }
             
             throw new Error(`No executor defined for tool ${this.toolName}`);

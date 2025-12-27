@@ -1,20 +1,34 @@
 
 import BotBase from "./bot.ts";
 import EventEmitter from "events";
-import ToolBase ,{ type ToolParameter } from "./tool.ts";
+import ToolBase, { type ToolParameter, type ToolEvents } from "./tool.ts";
 
 export interface CreateToolOptions<P extends Record<string, any> = any> {
     parameters?: ToolParameter<P>[];
     description?: string;
 }
 
-export function createTool<P extends Record<string, any>, R>(toolName: string,executor: (params: P,callEventEmitter?:EventEmitter) => Promise<R>,options?: CreateToolOptions<P>): ToolBase<P, R> {
+export function createTool<P extends Record<string, any>, R>(
+    toolName: string,
+    executor: (
+        params: P,
+        context: {
+            emit: (event: keyof ToolEvents, ...args: any[]) => boolean;
+            eventEmitter: EventEmitter;
+        }
+    ) => Promise<R>,
+    options?: CreateToolOptions<P>): ToolBase<P, R> {
     if (!executor) {
         throw new Error("No Entry Executor");
     }
     const base = new ToolBase<P, R>(toolName);
-    base.defineExecutor(executor);
-
+    const wrappedExecutor = async (params: P) => {
+        return await executor(params, {
+            emit: base.emit.bind(base),
+            eventEmitter: base
+        });
+    };
+    base.defineExecutor(wrappedExecutor);
     if (options?.parameters) {
         base.defineParameters(options.parameters);
     }

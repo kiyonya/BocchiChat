@@ -20,15 +20,30 @@ export interface HttpRequestReturns {
     body: any,
 }
 
-interface FileDownloaderParams {
+export interface FileDownloaderParams {
     url: string,
     destFolder: string,
     fileName?: string
 }
 
-interface FileDownloaderReturns {
+export interface FileDownloaderReturns {
     downloadedFile: string,
     isSuccessed: boolean
+}
+
+export interface CheckUrlAccessibilityParams {
+    url: string;
+    method?: 'HEAD' | 'GET' | 'OPTIONS';
+    timeout?: number;
+    headers?: Record<string, string>;
+    maxRedirects?: number;
+}
+
+export interface CheckUrlAccessibilityReturns {
+    isAccessible: boolean;
+    statusCode?: number;
+    responseTime: number;
+    errorMessage?: string;
 }
 
 export default class ToolNetwork {
@@ -92,11 +107,11 @@ export default class ToolNetwork {
             description: "请求的请求头，以键值对形式存在",
             type: 'object',
             required: false,
-        },{
-            name:'data',
-            description:"需要POST的数据,不是必须的",
-            type:'string',
-            required:false
+        }, {
+            name: 'data',
+            description: "需要POST的数据,不是必须的",
+            type: 'string',
+            required: false
         }],
         description: "对一个url发送http、https网络Post请求，返回的结果为{data:请求数据,code:请求状态码}"
     })
@@ -193,4 +208,116 @@ export default class ToolNetwork {
         description: "使用默认浏览器打开目标网址，返回{isSuccessed:boolean}"
     })
 
+    public static readonly checkUrlAccessibility = createTool<CheckUrlAccessibilityParams, CheckUrlAccessibilityReturns>(
+        "tool_network_checkUrlAccessibility",
+        async (params) => {
+            const startTime = Date.now();
+            let isAccessible = false;
+            let statusCode = 0;
+            let errorMessage = '';
+            let responseTime = 0;
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), params.timeout || 10000);
+
+                const response = await axios.request({
+                    method: params.method || 'HEAD',
+                    url: params.url,
+                    headers: {
+                        "User-Agent": this._DEFAULT_USER_AGENT,
+                        ...(params.headers)
+                    },
+                    signal: controller.signal,
+                    validateStatus: function (status) {
+                        return true;
+                    },
+                    maxRedirects: params.maxRedirects || 5
+                });
+
+                clearTimeout(timeoutId);
+
+                statusCode = response.status;
+                responseTime = Date.now() - startTime;
+
+                if (response.status >= 200 && response.status < 400) {
+                    isAccessible = true;
+                } else if (response.status === 429 || response.status >= 500) {
+                    // 429: 请求过多，500+：服务器错误
+                    errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                } else if (response.status === 403 || response.status === 401) {
+                    // 403/401: 无权限，但URL是存在的
+                    isAccessible = true;
+                    errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                } else if (response.status === 404) {
+                    errorMessage = `HTTP 404: Not Found`;
+                } else {
+                    errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                }
+
+            } catch (error: any) {
+                responseTime = Date.now() - startTime;
+
+                if (error.code === 'ECONNREFUSED') {
+                    errorMessage = 'Connection refused - 连接被拒绝';
+                } else if (error.code === 'ENOTFOUND') {
+                    errorMessage = 'DNS lookup failed - DNS解析失败';
+                } else if (error.code === 'ETIMEDOUT') {
+                    errorMessage = 'Connection timeout - 连接超时';
+                } else if (error.name === 'AbortError') {
+                    errorMessage = 'Request timeout - 请求超时';
+                } else if (error.code === 'ECONNABORTED') {
+                    errorMessage = 'Connection aborted - 连接中断';
+                } else if (error.code === 'ENETUNREACH') {
+                    errorMessage = 'Network unreachable - 网络不可达';
+                } else if (error.response) {
+                    statusCode = error.response.status;
+                    errorMessage = `HTTP ${statusCode}: ${error.response.statusText}`;
+                } else {
+                    errorMessage = error.message || 'Unknown error - 未知错误';
+                }
+            }
+
+            return {
+                isAccessible,
+                statusCode: statusCode || undefined,
+                responseTime,
+                errorMessage: errorMessage || undefined
+            };
+        }, {
+        parameters: [
+            {
+                name: "url",
+                required: true,
+                description: "需要检查的URL地址",
+                type: 'string'
+            },
+            {
+                name: 'method',
+                required: false,
+                description: "HTTP请求方法 (HEAD, GET, OPTIONS)，默认使用HEAD方法（更高效）",
+                type: 'string',
+                enum: ['HEAD', 'GET', 'OPTIONS']
+            },
+            {
+                name: 'timeout',
+                required: false,
+                description: "超时时间（毫秒），默认10000ms",
+                type: 'number'
+            },
+            {
+                name: 'headers',
+                required: false,
+                description: "自定义请求头",
+                type: 'object'
+            },
+            {
+                name: 'maxRedirects',
+                required: false,
+                description: "最大重定向次数，默认5次",
+                type: 'number'
+            }
+        ],
+        description: "检查URL是否可访问。返回是否可达、HTTP状态码、响应时间和错误信息（如果有）。注意：403/401等状态码会被视为可达（URL存在），但会包含错误信息。"
+    })
 }

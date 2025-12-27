@@ -1,126 +1,117 @@
-import OpenAI from "openai";
-import { type EXChatCompletionMessage, type ChatBotCreateOptions } from "../types.ts";
+import { EventEmitter } from "events";
+import { type EXChatCompletionMessage } from "../types.ts";
 import ToolBase from "./tool.ts";
-import EventEmitter from "node:events";
+import OpenAI from 'openai'
 
-
-interface BotEvents {
-    toolCall: (toolName: string, toolParams: any) => void;
-    toolCallError: (toolCallError: unknown) => void;
-    toolCallEnd: (toolCallEnd: any) => void;
-    toolCallEvent: (toolName: string, ...args: any[]) => void;
-    response: (completion: OpenAI.Chat.Completions.ChatCompletion) => void;
-    responseDelta: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string) => void;
-    chatCreate: (chatCreateOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming | OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming) => void;
-    chatContextUpdate: (context: EXChatCompletionMessage) => void;
-    error: (error: unknown) => void;
-    clearContext: () => void;
-    newChat: (chatId: string) => void;
+export interface AgentLimitMemory {
+    latestActiveTime: number,
+    chatId: string,
+    messages: EXChatCompletionMessage[]
 }
 
-export default class BotBase extends EventEmitter {
+export default class AgentBase<AP extends Record<string, any>, AR = any> extends ToolBase<AP, AR> {
 
-    on<K extends keyof BotEvents>(
-        event: K,
-        listener: BotEvents[K]
-    ): this {
-        return super.on(event, listener);
-    }
-
-    once<K extends keyof BotEvents>(
-        event: K,
-        listener: BotEvents[K]
-    ): this {
-        return super.once(event, listener);
-    }
-
-    emit<K extends keyof BotEvents>(
-        event: K,
-        ...args: Parameters<BotEvents[K]>
-    ): boolean {
-        return super.emit(event, ...args);
-    }
-
+    public agentSystemMessage: string = ''
     public openAIClient: OpenAI
-    public chatId: string
-
-    public chatContexts: {
-        latestActiveTime: number,
-        chatId: string,
-        messages: EXChatCompletionMessage[]
-    }
-
-    public botCreateOptions?: ChatBotCreateOptions
-    public systemMessage: string = ''
-
-    public botId: string
     public responseFormat: OpenAI.ResponseFormatText | OpenAI.ResponseFormatJSONObject | OpenAI.ResponseFormatJSONSchema = { type: 'text' }
+    public agentTools: ToolBase[] = []
 
-    public helloText: string = ''
+    constructor(agentName: string, description?: string, openAIClient?: OpenAI) {
+        super(`agent_${agentName}`)
 
-    public botTools: ToolBase[] = []
-
-    constructor(botId: string, botCreateOptions?: ChatBotCreateOptions) {
-        super()
-        this.botId = botId
-        this.botCreateOptions = botCreateOptions
-        this.openAIClient = new OpenAI({
-            baseURL: process.env.BASE_URL,
-            apiKey: process.env.APIKEY,
-        })
-        this.chatId = crypto.randomUUID()
-        this.chatContexts = {
-            chatId: this.chatId,
-            messages: [],
-            latestActiveTime: Date.now()
+        if (openAIClient) { this.openAIClient = openAIClient }
+        else {
+            this.openAIClient = new OpenAI({
+                baseURL: process.env.BASE_URL,
+                apiKey: process.env.APIKEY,
+            })
         }
-        this.helloText && console.log(this.helloText)
-    }
 
-    public useSystemMessage(systemMessage: string) {
-        this.systemMessage = systemMessage
+        super.defineExecutor(async (agentSitimulationParams): Promise<AR> => {
+
+            const chatId = crypto.randomUUID()
+
+            try {
+                const session = new AgentChatSession(this.openAIClient as OpenAI, chatId)
+                session.on.bind(this.emit)
+                session.responseFormat = this.responseFormat
+                session.systemMessage = this.agentSystemMessage
+                session.tools = this.agentTools
+
+                const response = await session.chatStream(agentSitimulationParams.input)
+
+                if (response.choices[0].message.content) {
+                    //这里可能解析出错
+                    const data = this.responseFormat.type === 'json_object' || this.responseFormat.type === 'json_schema' ? JSON.parse(response.choices[0].message.content) : response.choices[0].message.content
+                    return data
+                }
+                else {
+                    throw new Error("调用失败,缺少返回内容")
+                }
+            } catch (error) {
+                throw error
+            }
+        })
+
+        super.defineParameters([
+            {
+                name: 'input',
+                type: 'string',
+                description: "你希望这个Agent做的事情",
+                required: true
+            }
+        ])
+
+        description && super.defineDescription(description)
     }
 
     public defineSystemMessage(systemMessage: string) {
-        this.systemMessage = systemMessage
+        this.agentSystemMessage = systemMessage
     }
 
     public defineResponseFormat(responseFormat: OpenAI.ResponseFormatText | OpenAI.ResponseFormatJSONObject | OpenAI.ResponseFormatJSONSchema) {
         this.responseFormat = responseFormat
     }
 
-    /**
-     * @deprecated
-     */
-    public defineFunctions(functions: ToolBase[]) {
-        this.botTools = functions
+    public defineAgentTools(tools: ToolBase[]) {
+        this.agentTools = tools
+    }
+}
+
+class AgentChatSession extends EventEmitter {
+    private openAIClient: OpenAI
+    public memory: AgentLimitMemory
+    public tools: ToolBase[] = []
+    public chatId: string
+
+    public responseFormat:
+        OpenAI.ResponseFormatText |
+        OpenAI.ResponseFormatJSONObject |
+        OpenAI.ResponseFormatJSONSchema = { type: 'text' }
+
+    public systemMessage: string = ''
+    constructor(openAIClient: OpenAI, chatId: string) {
+        super()
+        this.openAIClient = openAIClient
+        this.chatId = chatId
+        this.memory = {
+            chatId: chatId,
+            latestActiveTime: Date.now(),
+            messages: []
+        }
     }
 
-    public defineHelloText(helloText: string) {
-        this.helloText = helloText
-    }
-
-    public defineTools(tools: ToolBase[]) {
-        this.botTools = tools
-    }
-
-    private toOpenAIToolList(): OpenAI.Chat.ChatCompletionFunctionTool[] | undefined {
-        if (this.botTools.length === 0) return undefined;
-        return this.botTools.map(i => i.toOpenAITool())
-    }
-
-    public async chat(userMessage: string, onRecursiveStep?: (message: EXChatCompletionMessage) => void): Promise<OpenAI.Chat.ChatCompletion> {
-        this.chatContexts.latestActiveTime = Date.now();
-        this.chatContexts.messages.push({
+    public async chat(userMessage: string): Promise<OpenAI.Chat.ChatCompletion> {
+        this.memory.latestActiveTime = Date.now();
+        this.pushMemory({
             role: 'user',
             content: userMessage,
             chatTime: Date.now()
-        });
+        })
 
         try {
             return await this.chatRecursive();
         } catch (error) {
-            this.emit('error', error)
             throw error
         }
     }
@@ -130,15 +121,13 @@ export default class BotBase extends EventEmitter {
 
         const openaiChatCreateOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
             model: process.env.MODEL_NAME || 'gpt-4',
-            max_completion_tokens: 1024,
-            temperature: this.botCreateOptions?.temperature || 0.3,
+            max_completion_tokens: 2048,
+            temperature: 0.3,
             messages: this.buildMessageWithContext(),
             response_format: this.responseFormat,
             tools: tools,
             tool_choice: 'auto',
         }
-
-        this.emit('chatCreate', openaiChatCreateOptions)
 
         const completion = await this.openAIClient.chat.completions.create(openaiChatCreateOptions);
 
@@ -152,8 +141,7 @@ export default class BotBase extends EventEmitter {
                 chatTime: Date.now()
             };
 
-            this.pushContext(assistantMsg)
-            this.emit('response', completion)
+            this.pushMemory(assistantMsg)
 
             if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls?.length) {
                 for (const toolCall of choice.message.tool_calls) {
@@ -166,7 +154,6 @@ export default class BotBase extends EventEmitter {
                             console.error("参数解析失败", e);
                         }
 
-                        this.emit('toolCall', callName, callArguments)
                         const callResult = await this.handelToolCall(callName, callArguments);
 
                         const toolMsg: EXChatCompletionMessage = {
@@ -178,7 +165,7 @@ export default class BotBase extends EventEmitter {
                             chatTime: Date.now()
                         };
 
-                        this.pushContext(toolMsg);
+                        this.pushMemory(toolMsg);
                     }
                 }
 
@@ -189,12 +176,13 @@ export default class BotBase extends EventEmitter {
     }
 
     public async chatStream(userMessage: string, onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string) => void): Promise<OpenAI.Chat.ChatCompletion> {
-        this.chatContexts.latestActiveTime = Date.now();
-        this.chatContexts.messages.push({
+        this.memory.latestActiveTime = Date.now();
+
+        this.pushMemory({
             role: 'user',
             content: userMessage,
             chatTime: Date.now()
-        });
+        })
 
         // 使用递归处理函数调用
         try {
@@ -205,13 +193,13 @@ export default class BotBase extends EventEmitter {
         }
     }
 
-    private async chatStreamRecursive(onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string) => void, callEventEmitterMap?: Record<string, EventEmitter>): Promise<OpenAI.Chat.ChatCompletion> {
+    private async chatStreamRecursive(onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string) => void): Promise<OpenAI.Chat.ChatCompletion> {
         const tools = this.toOpenAIToolList();
 
         const openaiChatStreamCreateOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
             model: process.env.MODEL_NAME || 'gpt-4',
             max_completion_tokens: 1024,
-            temperature: this.botCreateOptions?.temperature || 0.3,
+            temperature: 0.3,
             messages: this.buildMessageWithContext(),
             stream: true,
             response_format: this.responseFormat,
@@ -254,15 +242,6 @@ export default class BotBase extends EventEmitter {
                 const delta = choice.delta.content;
                 responseContent += delta;
 
-                if (callEventEmitterMap) {
-                    //广播答复事件
-                    for (const [callId, eventEmitter] of Object.entries(callEventEmitterMap)) {
-                        eventEmitter.emit("response", {
-                            isStream: true,
-                            delta: delta
-                        })
-                    }
-                }
 
                 this.emit('responseDelta', event, delta, responseContent)
 
@@ -303,21 +282,11 @@ export default class BotBase extends EventEmitter {
             chatTime: Date.now()
         };
 
-        //清理事件
-        if (callEventEmitterMap) {
-            for (const key of Object.keys(callEventEmitterMap)) {
-                callEventEmitterMap[key].removeAllListeners()
-                //和你的内存一起下地狱吧！！！
-                delete callEventEmitterMap[key]
-            }
-
-        }
-
         if (toolCalls.length > 0) {
             assistantMessage.tool_calls = toolCalls;
         }
 
-        this.pushContext(assistantMessage)
+        this.pushMemory(assistantMessage)
 
         if ((finishReason === 'tool_calls' || toolCalls.length > 0)) {
 
@@ -335,9 +304,9 @@ export default class BotBase extends EventEmitter {
 
                         this.emit('toolCall', callName, callArguments)
 
-                        const callResult = await this.handelToolCall(callName, callArguments, callEventEmitter);
+                        const callResult = await this.handelToolCall(callName, callArguments);
 
-                        this.pushContext({
+                        this.pushMemory({
                             role: 'tool',
                             content: typeof callResult === 'string'
                                 ? callResult
@@ -348,7 +317,7 @@ export default class BotBase extends EventEmitter {
 
                     } catch (error) {
                         this.emit('toolCallError', error)
-                        this.pushContext({
+                        this.pushMemory({
                             role: 'tool',
                             content: JSON.stringify({ error: 'Failed to execute function arguments parse error' }),
                             tool_call_id: toolCall.id,
@@ -358,7 +327,7 @@ export default class BotBase extends EventEmitter {
                 }
             }
 
-            return await this.chatStreamRecursive(onResponse, callResultEventEmittersMap);
+            return await this.chatStreamRecursive(onResponse);
         }
 
         const chatCompletion: OpenAI.Chat.Completions.ChatCompletion = {
@@ -382,14 +351,15 @@ export default class BotBase extends EventEmitter {
             usage: usage
         }
 
+        
         this.emit('response', chatCompletion)
 
         return chatCompletion
 
     }
 
-    public async handelToolCall(toolName: string, parameters: Record<string, any>, callEventEmitter?: EventEmitter) {
-        const callFunction = this.botTools.find(i => i.toolName === toolName);
+    public async handelToolCall(toolName: string, parameters: Record<string, any>) {
+        const callFunction = this.tools.find(i => i.toolName === toolName);
         if (callFunction) {
             try {
 
@@ -412,10 +382,10 @@ export default class BotBase extends EventEmitter {
     }
 
     protected buildMessageWithContext(): OpenAI.Chat.ChatCompletionMessageParam[] {
-        const maxTokens = this.botCreateOptions?.max_context_length || 10;
+        const maxTokens = 10;
         const systemMessage = this.systemMessage
 
-        const recentHistory = this.chatContexts.messages.slice(-(maxTokens * 2));
+        const recentHistory = this.memory.messages.slice(-(maxTokens * 2));
 
         const openaiMessage: OpenAI.Chat.ChatCompletionMessageParam[] = []
 
@@ -468,27 +438,13 @@ export default class BotBase extends EventEmitter {
         return openaiMessage;
     }
 
-    private pushContext(context: EXChatCompletionMessage) {
-        this.chatContexts.messages.push(context)
+    private pushMemory(context: EXChatCompletionMessage) {
+        this.memory.messages.push(context)
         this.emit('chatContextUpdate', context)
     }
 
-    public clearContexts() {
-        this.chatContexts.messages = []
-        this.chatContexts.latestActiveTime = Date.now()
-        this.emit('clearContext')
-    }
-
-    public listContexts() {
-        return this.chatContexts
-    }
-
-    public newChat() {
-        this.clearContexts()
-        this.chatId = crypto.randomUUID()
-        this.emit('newChat', this.chatId)
-        if (this.helloText) {
-            console.log(this.helloText)
-        }
+    private toOpenAIToolList(): OpenAI.Chat.ChatCompletionFunctionTool[] | undefined {
+        if (this.tools.length === 0) return undefined;
+        return this.tools.map(i => i.toOpenAITool())
     }
 }

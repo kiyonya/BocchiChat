@@ -6,6 +6,10 @@ export function botChatLine(bot: BotBase) {
         input: process.stdin,
         output: process.stdout
     })
+    bot.on('responseDelta', (chunk, delta, payload) => {
+        delta = delta.replaceAll("</think>", "\n")
+        process.stdout.write(`\x1b[32m${delta}\x1b[0m`);
+    })
     const doConversation = async () => {
         rl.question('', async (userInput) => {
             const input = userInput.trim();
@@ -15,11 +19,7 @@ export function botChatLine(bot: BotBase) {
                 return;
             }
             try {
-                const response = await bot.chatStream(input, (_chunk, delta, payload) => {
-                    delta = delta.replaceAll("</think>","\n")
-                    process.stdout.write(`\x1b[32m${delta}\x1b[0m`);
-                });
-               
+                const response = await bot.chatStream(input);
                 console.log(`\n\x1b[33m使用token:${response.usage?.total_tokens}\x1b[0m`)
             } catch (error) {
                 console.error('错误:', error);

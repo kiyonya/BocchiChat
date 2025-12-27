@@ -268,7 +268,7 @@ export default class ToolFile {
 
     public static readonly glob = createTool<GlobSyncParams, { matches: string[] }>(
         'tool_file_glob',
-        async (globParams) => {
+        async (globParams,undefined) => {
             const cwd = globParams.cwd || process.cwd();
             const pattern = globParams.pattern;
             const includeDirs = globParams.includeDirs ?? true;
