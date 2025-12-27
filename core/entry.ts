@@ -1,16 +1,18 @@
-import FunctionBase, { type ToolParameter } from "./function.ts";
-import BotBase from "./bot.ts";
 
-export interface CreateFunctionOptions<P extends Record<string, any> = any> {
+import BotBase from "./bot.ts";
+import EventEmitter from "events";
+import ToolBase ,{ type ToolParameter } from "./tool.ts";
+
+export interface CreateToolOptions<P extends Record<string, any> = any> {
     parameters?: ToolParameter<P>[];
     description?: string;
 }
 
-export function createFunction<P extends Record<string, any>, R>(functionName: string,executor: (params: P) => Promise<R>,options?: CreateFunctionOptions<P>): FunctionBase<P, R> {
+export function createTool<P extends Record<string, any>, R>(toolName: string,executor: (params: P,callEventEmitter?:EventEmitter) => Promise<R>,options?: CreateToolOptions<P>): ToolBase<P, R> {
     if (!executor) {
         throw new Error("No Entry Executor");
     }
-    const base = new FunctionBase<P, R>(functionName);
+    const base = new ToolBase<P, R>(toolName);
     base.defineExecutor(executor);
 
     if (options?.parameters) {

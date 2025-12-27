@@ -1,42 +1,50 @@
 import axios from "axios";
-import { createFunction } from "../core/entry.ts";
+import { createTool } from "../core/entry.ts";
 import { DownloaderHelper } from "node-downloader-helper";
 import fs from 'fs'
-import path from "path";
 import open from "open";
 
-interface RequestURIOptions {
-    method: 'get' | 'post',
+export interface HttpGetRequestParams {
     url: string,
-    headers?: Record<string, string>
+    headers?: Record<string, string>,
 }
 
-interface RequestURIResponse {
+export interface HttpPostRequestParams {
+    url: string,
+    headers?: Record<string, string>,
+    data: any
+}
+
+export interface HttpRequestReturns {
     code: number,
     body: any,
 }
 
-interface NetworkDownloadFileParams {
+interface FileDownloaderParams {
     url: string,
     destFolder: string,
     fileName?: string
 }
 
-interface NetworkDownloadFileReturns {
+interface FileDownloaderReturns {
     downloadedFile: string,
     isSuccessed: boolean
-
 }
 
-export default class LibNetwork {
+export default class ToolNetwork {
 
-    public static readonly HttpRequest = createFunction<RequestURIOptions, RequestURIResponse>(
-        "LibNetwork_HttpRequest",
-        async (requestURIOptions) => {
+    private static readonly _DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+
+    public static readonly httpGetRequest = createTool<HttpGetRequestParams, HttpRequestReturns>(
+        "tool_network_httpGetRequest",
+        async (httpGetRequestParams) => {
             const request = await axios.request({
-                method: requestURIOptions.method ?? 'GET',
-                url: requestURIOptions.url,
-                headers: requestURIOptions.headers,
+                method: 'GET',
+                url: httpGetRequestParams.url,
+                headers: {
+                    "User-Agent": this._DEFAULT_USER_AGENT,
+                    ...(httpGetRequestParams.headers)
+                },
             })
             return {
                 code: request.status,
@@ -44,11 +52,6 @@ export default class LibNetwork {
             }
         }, {
         parameters: [{
-            name: "method",
-            enum: ["get", "post"],
-            description: "请求的方法，枚举自get | post,默认为get",
-            type: 'string'
-        }, {
             name: 'url',
             description: "请求的URL",
             type: 'string',
@@ -59,11 +62,47 @@ export default class LibNetwork {
             type: 'object',
             required: false,
         }],
-        description: "对一个uri发送http、https网络请求，返回的结果为{data:请求数据,code:请求状态码}"
+        description: "对一个url发送http、https的Get网络请求，返回的结果为{data:请求数据,code:请求状态码}"
     })
 
-    public static readonly FileDownloader = createFunction<NetworkDownloadFileParams, NetworkDownloadFileReturns>(
-        "LibNetwork_FileDownloader",
+    public static readonly httpPostRequest = createTool<HttpPostRequestParams, HttpRequestReturns>(
+        "tool_network_httpPostRequest",
+        async (httpPostRequestParams) => {
+            const request = await axios.request({
+                method: 'POST',
+                url: httpPostRequestParams.url,
+                headers: {
+                    "User-Agent": this._DEFAULT_USER_AGENT,
+                    ...(httpPostRequestParams.headers)
+                },
+                data: httpPostRequestParams.data
+            })
+            return {
+                code: request.status,
+                body: request.data,
+            }
+        }, {
+        parameters: [{
+            name: 'url',
+            description: "请求的URL",
+            type: 'string',
+            required: true,
+        }, {
+            name: 'headers',
+            description: "请求的请求头，以键值对形式存在",
+            type: 'object',
+            required: false,
+        },{
+            name:'data',
+            description:"需要POST的数据,不是必须的",
+            type:'string',
+            required:false
+        }],
+        description: "对一个url发送http、https网络Post请求，返回的结果为{data:请求数据,code:请求状态码}"
+    })
+
+    public static readonly fileDownloader = createTool<FileDownloaderParams, FileDownloaderReturns>(
+        "tool_network_fileDownloader",
         async (downloadFileParams) => {
             if (!fs.existsSync(downloadFileParams.destFolder)) {
                 fs.mkdirSync(downloadFileParams.destFolder, { recursive: true })
@@ -136,8 +175,8 @@ export default class LibNetwork {
         description: "将URL对应的文件下载到本地的目录，返回{isSuccessed:boolean,downloadedFile:string} isSuccessed表示是否下载成功，downloadedFile表示下载后文件保存的位置"
     })
 
-    public static readonly OpenBrowser = createFunction<{ url: string }, { isSuccessed: boolean }>(
-        'LibNetwork_OpenBrowser',
+    public static readonly openBrowser = createTool<{ url: string }, { isSuccessed: boolean }>(
+        'tool_network_openBrowser',
         async (openBrowserParams) => {
             const process = await open(openBrowserParams.url)
             if (process && process.pid) {
@@ -153,7 +192,5 @@ export default class LibNetwork {
         }],
         description: "使用默认浏览器打开目标网址，返回{isSuccessed:boolean}"
     })
-
-
 
 }

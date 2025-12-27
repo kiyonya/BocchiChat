@@ -1,3 +1,4 @@
+import EventEmitter from "events";
 import OpenAI from "openai"
 
 export interface ToolParameter<T = any> {
@@ -8,15 +9,15 @@ export interface ToolParameter<T = any> {
     enum?: any[]
 }
 
-export default class FunctionBase<TParams extends Record<string, any> = any, TResult = any> {
+export default class ToolBase<TParams extends Record<string, any> = any, TResult = any> {
     public parameters: ToolParameter<TParams>[] = [];
-    public functionName: string = 'default_function';
-    public functionDescription: string = '';
+    public toolName: string = 'default_tool';
+    public toolDescription: string = '';
 
-    protected executor: ((params: TParams) => Promise<TResult>) | null = null;
+    protected executor: ((params: TParams,callEventEmitter?:EventEmitter) => Promise<TResult>) | null = null;
 
-    constructor(functionName: string) {
-        this.functionName = functionName;
+    constructor(toolName: string) {
+        this.toolName = toolName;
     }
 
     public defineParameters(parameters: ToolParameter<TParams>[]): this {
@@ -25,26 +26,26 @@ export default class FunctionBase<TParams extends Record<string, any> = any, TRe
     }
 
     public defineDescription(description: string): this {
-        this.functionDescription = description;
+        this.toolDescription = description;
         return this;
     }
 
-    public defineExecutor(executor: (params: TParams) => Promise<TResult>): this {
+    public defineExecutor(executor: (params: TParams,callEventEmitter?:EventEmitter) => Promise<TResult>): this {
         this.executor = executor;
         return this;
     }
 
-    public async execute(parameters: TParams): Promise<TResult> {
+    public async execute(parameters: TParams,callEventEmitter?:EventEmitter): Promise<TResult> {
         try {
             this.validateParameters(parameters);
             
             if (this.executor) {
-                return await this.executor(parameters);
+                return await this.executor(parameters,callEventEmitter);
             }
             
-            throw new Error(`No executor defined for function ${this.functionName}`);
+            throw new Error(`No executor defined for tool ${this.toolName}`);
         } catch (error) {
-            console.error(`Error executing function ${this.functionName}:`, error);
+            console.error(`Error executing tool ${this.toolName}:`, error);
             throw error;
         }
     }
@@ -65,8 +66,8 @@ export default class FunctionBase<TParams extends Record<string, any> = any, TRe
         const chatCompletionFunctionTool: OpenAI.Chat.ChatCompletionFunctionTool = {
             type: 'function',
             function: {
-                name: this.functionName,
-                description: this.functionDescription
+                name: this.toolName,
+                description: this.toolDescription
             }
         };
 
