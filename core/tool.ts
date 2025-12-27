@@ -10,32 +10,32 @@ export interface ToolParameter<T = any> {
 }
 
 export interface ToolEvents {
-    runtimeEvent:(...args:any[])=>void,
-    
+    runtimeEvent: (...args: any[]) => void,
+
 }
 
-export default class ToolBase<TParams extends Record<string, any> = any, TResult = any> extends EventEmitter{
+export default class ToolBase<TParams extends Record<string, any> = any, TResult = any> extends EventEmitter {
 
     on<K extends keyof ToolEvents>(
-    event: K,
-    listener: ToolEvents[K]
-  ): this {
-    return super.on(event as string, listener);
-  }
+        event: K,
+        listener: ToolEvents[K]
+    ): this {
+        return super.on(event as string, listener);
+    }
 
-  once<K extends keyof ToolEvents>(
-    event: K,
-    listener: ToolEvents[K]
-  ): this {
-    return super.once(event as string, listener);
-  }
+    once<K extends keyof ToolEvents>(
+        event: K,
+        listener: ToolEvents[K]
+    ): this {
+        return super.once(event as string, listener);
+    }
 
-  emit<K extends keyof ToolEvents>(
-    event: K,
-    ...args: Parameters<(ToolEvents)[K]>
-  ): boolean {
-    return super.emit(event as string, ...args);
-  }
+    emit<K extends keyof ToolEvents>(
+        event: K,
+        ...args: Parameters<(ToolEvents)[K]>
+    ): boolean {
+        return super.emit(event as string, ...args);
+    }
 
     public parameters: ToolParameter<TParams>[] = [];
     public toolName: string = 'default_tool';
@@ -66,11 +66,11 @@ export default class ToolBase<TParams extends Record<string, any> = any, TResult
     public async execute(parameters: TParams): Promise<TResult> {
         try {
             this.validateParameters(parameters);
-            
+
             if (this.executor) {
                 return await this.executor(parameters);
             }
-            
+
             throw new Error(`No executor defined for tool ${this.toolName}`);
         } catch (error) {
             console.error(`Error executing tool ${this.toolName}:`, error);
@@ -99,26 +99,26 @@ export default class ToolBase<TParams extends Record<string, any> = any, TResult
             }
         };
 
-        const defineParams: OpenAI.FunctionParameters = {};
+        const properties: Record<string, any> = {};
         const requiredParams: string[] = [];
 
         for (const param of this.parameters) {
             const paramName = param.name;
-            defineParams[paramName] = {
+            properties[paramName] = {
                 type: param.type,
                 description: param.description,
-                ...(param.enum ? {enum:param.enum} : {})
+                ...(param.enum ? { enum: param.enum } : {})
             };
             if (param.required ?? true) {
                 requiredParams.push(paramName);
             }
         }
 
-        chatCompletionFunctionTool.function.parameters = defineParams;
-
-        if (requiredParams.length > 0) {
-            chatCompletionFunctionTool.function.parameters.required = requiredParams;
-        }
+        chatCompletionFunctionTool.function.parameters = {
+            type: "object",
+            properties: properties,
+            ...(requiredParams.length > 0 && { required: requiredParams })
+        };
 
         return chatCompletionFunctionTool;
     }

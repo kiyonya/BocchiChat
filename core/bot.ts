@@ -218,6 +218,7 @@ export default class BotBase extends EventEmitter {
             tools: tools,
             prompt_cache_retention: '24h',
             tool_choice: 'auto',
+            
         }
 
         this.emit('chatCreate', openaiChatStreamCreateOptions)
