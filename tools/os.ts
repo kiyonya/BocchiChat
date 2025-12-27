@@ -1,5 +1,15 @@
 import { createTool } from "../core/entry.ts";
 import os from 'node:os'
+import { getInstalledApps } from 'get-installed-apps';
+import notifier from 'node-notifier';
+
+interface InstalledAppItem {
+    appIdentifier: string,
+    appName: string,
+    DisplayName: string,
+    InstallLocation?: string,
+    Publisher: string
+}
 
 export default class ToolOS {
 
@@ -120,5 +130,69 @@ export default class ToolOS {
         parameters: [],
         description: "获取主机和系统版本信息"
     })
-    
+
+    public static readonly getInstalledApps = createTool<{}, { name: string, publisher: string, installLocation?: string }[]>('tool_os_getInstalledApps', async () => {
+
+        const apps = (await getInstalledApps()) as InstalledAppItem[]
+
+        const filteredApps = Array.from(
+            apps
+                .filter(i => i.Publisher !== 'Microsoft Corporation')
+                .map(i => ({
+                    name: i.DisplayName || i.appName,
+                    installLocation: i.InstallLocation,
+                    publisher: i.Publisher
+                }))
+                .reduce((map, app) => {
+                    if (!map.has(app.publisher)) {
+                        map.set(app.publisher, app);
+                    }
+                    return map;
+                }, new Map())
+                .values()
+        );
+
+        return filteredApps
+    }, {
+        parameters: [],
+        description: "获取当前电脑上安装的所有软件的名称和安装位置数组 返回结构为 {name:string,publisher:string,installLocation?:string}[] 读取出错时会报错"
+    })
+
+    public static readonly showSystemNotification = createTool<{
+        title: string,
+        message: string,
+        noticeType:'error' | 'info' | 'warn'
+    }, {}>('tool_os_showSystemNotification', async (notifierParams) => {
+        const win = notifier.notify({
+            title: notifierParams.title || "标题",
+            message: notifierParams.message || "信息",
+            sound: true,
+            wait: true,
+            time: 5000,
+            type:notifierParams.noticeType || 'info'
+        })
+        return {}
+    }, {
+        parameters: [
+            {
+                name: 'message',
+                type: 'string',
+                description: "显示的通知内容",
+                required: true
+            },
+            {
+                name: "title",
+                type: 'string',
+                description: "显示的通知标题",
+                required: true,
+            },{
+                name:'noticeType',
+                type:'string',
+                description:'通知类型，不是必须的',
+                required:false,
+                enum:['error','info','warn']
+            }
+        ],
+        description: "给用户发送系统通知消息，这个函数不会返回任何内容"
+    })
 }
