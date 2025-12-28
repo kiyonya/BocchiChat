@@ -1,8 +1,16 @@
 import OpenAI from "openai";
-import { type EXChatCompletionMessage, type ChatBotCreateOptions } from "../types.ts";
+import { type EXChatCompletionMessage, type ModelChatOptions } from "../types.ts";
 import ToolBase from "./tool.ts";
 import EventEmitter from "node:events";
+import path from "node:path";
+import fs from 'fs'
+import { createTool } from "./entry.ts";
+import chalk from "chalk";
 
+interface SentimentPrompt {
+    sentiment: string,
+    prompt: string
+}
 
 interface BotEvents {
     toolCall: (toolName: string, toolParams: any) => void;
@@ -18,7 +26,9 @@ interface BotEvents {
     newChat: (chatId: string) => void;
 }
 
-export default class BotBase extends EventEmitter {
+export default class BotBase<S extends string = string> extends EventEmitter {
+
+    public static readonly DEFAULT_ROLE_PROMPT = `你是一个AI助手，今天是${new Date().toLocaleDateString()}`
 
     on<K extends keyof BotEvents>(
         event: K,
@@ -44,56 +54,81 @@ export default class BotBase extends EventEmitter {
     public openAIClient: OpenAI
     public chatId: string
 
-    public chatContexts: {
+    public botMemories: {
         latestActiveTime: number,
         chatId: string,
-        messages: EXChatCompletionMessage[]
+        messages: EXChatCompletionMessage[],
+        system: string
     }
 
-    public botCreateOptions?: ChatBotCreateOptions
-    public systemMessage: string = ''
+    public botChatOptions?: ModelChatOptions
 
     public botId: string
     public responseFormat: OpenAI.ResponseFormatText | OpenAI.ResponseFormatJSONObject | OpenAI.ResponseFormatJSONSchema = { type: 'text' }
 
+    //
+    public botRolePrompt: string = ''
     public helloText: string = ''
+    //
+    public isAISentimentSwitchEnable: boolean = false
+    public currentSentiment: string | null = null
+    public botSentiments: Record<string, SentimentPrompt> = {}
+    //
+    public definedTools: ToolBase[] = []
+    //
+    private innerSwitchSentiment: ToolBase | null = null
+    private innerClearSentiment: ToolBase | null = null
+    //
+    private bindMemoriesFile?: string
 
-    public botTools: ToolBase[] = []
-
-    constructor(botId: string, botCreateOptions?: ChatBotCreateOptions) {
+    constructor(botId: string, OpenAIClient?: OpenAI, memoryFile?: string, botCreateOptions?: ModelChatOptions) {
         super()
         this.botId = botId
-        this.botCreateOptions = botCreateOptions
-        this.openAIClient = new OpenAI({
+        this.botChatOptions = botCreateOptions
+        this.openAIClient = OpenAIClient || new OpenAI({
             baseURL: process.env.BASE_URL,
             apiKey: process.env.APIKEY,
         })
         this.chatId = crypto.randomUUID()
-        this.chatContexts = {
+        this.botMemories = {
             chatId: this.chatId,
             messages: [],
-            latestActiveTime: Date.now()
+            latestActiveTime: Date.now(),
+            system: ''
         }
+
+        if (memoryFile) {
+            this.bindMemoriesFile = memoryFile
+            const isImported = this.importMemoryFromFile(this.bindMemoriesFile)
+            if (isImported) {
+                console.log(chalk.bgBlue.white(`${this.botId} 已使用记忆文件 ${memoryFile}`))
+            }
+        }
+
         this.helloText && console.log(this.helloText)
     }
 
     public useSystemMessage(systemMessage: string) {
-        this.systemMessage = systemMessage
+        this.botRolePrompt = systemMessage
     }
-
+    /**
+     * @deprecated
+     * @param systemMessage 
+     */
     public defineSystemMessage(systemMessage: string) {
-        this.systemMessage = systemMessage
+        this.botRolePrompt = systemMessage
     }
 
     public defineResponseFormat(responseFormat: OpenAI.ResponseFormatText | OpenAI.ResponseFormatJSONObject | OpenAI.ResponseFormatJSONSchema) {
         this.responseFormat = responseFormat
     }
 
-    /**
-     * @deprecated
-     */
-    public defineFunctions(functions: ToolBase[]) {
-        this.botTools = functions
+    public defineSentiment<TSentiment extends S | string>(sentiments: Record<TSentiment, SentimentPrompt>) {
+        this.botSentiments = sentiments as Record<S, SentimentPrompt>;
+    }
+
+    public enableAISentimentSwitch(state: boolean = false) {
+        this.isAISentimentSwitchEnable = state
     }
 
     public defineHelloText(helloText: string) {
@@ -101,17 +136,48 @@ export default class BotBase extends EventEmitter {
     }
 
     public defineTools(tools: ToolBase[]) {
-        this.botTools = tools
+        this.definedTools = tools
     }
 
-    private toOpenAIToolList(): OpenAI.Chat.ChatCompletionFunctionTool[] | undefined {
-        if (this.botTools.length === 0) return undefined;
-        return this.botTools.map(i => i.toOpenAITool())
+    public defineRolePrompt(role: string) {
+        this.botRolePrompt = role
+    }
+
+    public buildTools(): ToolBase[] {
+        const tools: ToolBase[] = []
+        //注册情感转换工具
+        if (this.isAISentimentSwitchEnable) {
+            this.innerSwitchSentiment = createTool<{ sentiment: S }, {}>('bot_inner_switchSentiment', async (sentimentParams) => {
+                this.switchSentiment(sentimentParams.sentiment)
+                return {}
+            }, {
+                description: "修改你当前的情绪类型，如果你希望恢复正常程序，请使用bot_inner_clearSentiment",
+                parameters: [{
+                    name: 'sentiment',
+                    required: true,
+                    description: "你希望的情绪类型",
+                    type: 'string',
+                    enum: Object.keys(this.botSentiments) as S[]
+                }]
+            })
+            tools.push(this.innerSwitchSentiment)
+
+            this.innerClearSentiment = createTool<{}, {}>('bot_inner_clearSentiment', async () => {
+                this.clearSentiment()
+                return {}
+            }, {
+                description: "清除当前的情绪，恢复正常的自己,函数没有返回结果",
+                parameters: []
+            })
+            tools.push(this.innerClearSentiment)
+        }
+        tools.push(...this.definedTools)
+        return tools
     }
 
     public async chat(userMessage: string, onRecursiveStep?: (message: EXChatCompletionMessage) => void): Promise<OpenAI.Chat.ChatCompletion> {
-        this.chatContexts.latestActiveTime = Date.now();
-        this.chatContexts.messages.push({
+        this.botMemories.latestActiveTime = Date.now();
+        this.botMemories.messages.push({
             role: 'user',
             content: userMessage,
             chatTime: Date.now()
@@ -126,16 +192,19 @@ export default class BotBase extends EventEmitter {
     }
 
     private async chatRecursive(): Promise<OpenAI.Chat.ChatCompletion> {
-        const tools = this.toOpenAIToolList();
+
+        //当前这一轮的工具
+        const tools = this.buildTools();
 
         const openaiChatCreateOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
             model: process.env.MODEL_NAME || 'gpt-4',
             max_completion_tokens: 1024,
-            temperature: this.botCreateOptions?.temperature || 0.3,
-            messages: this.buildMessageWithContext(),
+            temperature: this.botChatOptions?.temperature || 0.3,
+            messages: this.buildMessageWithMemory(),
             response_format: this.responseFormat,
-            tools: tools,
+            tools: tools.map(i => i.toOpenAITool()),
             tool_choice: 'auto',
+            parallel_tool_calls: true
         }
 
         this.emit('chatCreate', openaiChatCreateOptions)
@@ -152,7 +221,7 @@ export default class BotBase extends EventEmitter {
                 chatTime: Date.now()
             };
 
-            this.pushContext(assistantMsg)
+            this.pushMemory(assistantMsg)
             this.emit('response', completion)
 
             if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls?.length) {
@@ -167,7 +236,7 @@ export default class BotBase extends EventEmitter {
                         }
 
                         this.emit('toolCall', callName, callArguments)
-                        const callResult = await this.handelToolCall(callName, callArguments);
+                        const callResult = await this.handelToolCall(tools, callName, callArguments);
 
                         const toolMsg: EXChatCompletionMessage = {
                             tool_call_id: toolCall.id,
@@ -178,7 +247,7 @@ export default class BotBase extends EventEmitter {
                             chatTime: Date.now()
                         };
 
-                        this.pushContext(toolMsg);
+                        this.pushMemory(toolMsg);
                     }
                 }
 
@@ -189,8 +258,8 @@ export default class BotBase extends EventEmitter {
     }
 
     public async chatStream(userMessage: string, onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string) => void): Promise<OpenAI.Chat.ChatCompletion> {
-        this.chatContexts.latestActiveTime = Date.now();
-        this.chatContexts.messages.push({
+        this.botMemories.latestActiveTime = Date.now();
+        this.botMemories.messages.push({
             role: 'user',
             content: userMessage,
             chatTime: Date.now()
@@ -205,20 +274,21 @@ export default class BotBase extends EventEmitter {
         }
     }
 
-    private async chatStreamRecursive(onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string) => void, callEventEmitterMap?: Record<string, EventEmitter>): Promise<OpenAI.Chat.ChatCompletion> {
-        const tools = this.toOpenAIToolList();
+    private async chatStreamRecursive(onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string) => void): Promise<OpenAI.Chat.ChatCompletion> {
+
+        const tools = this.buildTools()
 
         const openaiChatStreamCreateOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
             model: process.env.MODEL_NAME || 'gpt-4',
             max_completion_tokens: 1024,
-            temperature: this.botCreateOptions?.temperature || 0.3,
-            messages: this.buildMessageWithContext(),
+            temperature: this.botChatOptions?.temperature || 0.3,
+            messages: this.buildMessageWithMemory(),
             stream: true,
             response_format: this.responseFormat,
-            tools: tools,
+            tools: tools.map(i => i.toOpenAITool()),
             prompt_cache_retention: '24h',
             tool_choice: 'auto',
-            
+            parallel_tool_calls: true
         }
 
         this.emit('chatCreate', openaiChatStreamCreateOptions)
@@ -254,16 +324,6 @@ export default class BotBase extends EventEmitter {
             if (choice.delta.content) {
                 const delta = choice.delta.content;
                 responseContent += delta;
-
-                if (callEventEmitterMap) {
-                    //广播答复事件
-                    for (const [callId, eventEmitter] of Object.entries(callEventEmitterMap)) {
-                        eventEmitter.emit("response", {
-                            isStream: true,
-                            delta: delta
-                        })
-                    }
-                }
 
                 this.emit('responseDelta', event, delta, responseContent)
 
@@ -304,41 +364,26 @@ export default class BotBase extends EventEmitter {
             chatTime: Date.now()
         };
 
-        //清理事件
-        if (callEventEmitterMap) {
-            for (const key of Object.keys(callEventEmitterMap)) {
-                callEventEmitterMap[key].removeAllListeners()
-                //和你的内存一起下地狱吧！！！
-                delete callEventEmitterMap[key]
-            }
-
-        }
-
         if (toolCalls.length > 0) {
             assistantMessage.tool_calls = toolCalls;
         }
 
-        this.pushContext(assistantMessage)
+        this.pushMemory(assistantMessage)
 
         if ((finishReason === 'tool_calls' || toolCalls.length > 0)) {
-
-            const callResultEventEmittersMap: Record<string, EventEmitter> = {}
 
             for (const toolCall of toolCalls) {
                 if (toolCall.type === 'function') {
                     try {
-
-                        const callEventEmitter = new EventEmitter()
-                        callResultEventEmittersMap[toolCall.id] = callEventEmitter
 
                         const callName = toolCall.function.name;
                         const callArguments = JSON.parse(toolCall.function.arguments);
 
                         this.emit('toolCall', callName, callArguments)
 
-                        const callResult = await this.handelToolCall(callName, callArguments, callEventEmitter);
+                        const callResult = await this.handelToolCall(tools, callName, callArguments);
 
-                        this.pushContext({
+                        this.pushMemory({
                             role: 'tool',
                             content: typeof callResult === 'string'
                                 ? callResult
@@ -349,7 +394,7 @@ export default class BotBase extends EventEmitter {
 
                     } catch (error) {
                         this.emit('toolCallError', error)
-                        this.pushContext({
+                        this.pushMemory({
                             role: 'tool',
                             content: JSON.stringify({ error: 'Failed to execute function arguments parse error' }),
                             tool_call_id: toolCall.id,
@@ -359,7 +404,7 @@ export default class BotBase extends EventEmitter {
                 }
             }
 
-            return await this.chatStreamRecursive(onResponse, callResultEventEmittersMap);
+            return await this.chatStreamRecursive(onResponse);
         }
 
         const chatCompletion: OpenAI.Chat.Completions.ChatCompletion = {
@@ -389,8 +434,8 @@ export default class BotBase extends EventEmitter {
 
     }
 
-    public async handelToolCall(toolName: string, parameters: Record<string, any>, callEventEmitter?: EventEmitter) {
-        const callFunction = this.botTools.find(i => i.toolName === toolName);
+    public async handelToolCall(toolList: ToolBase[] = [], toolName: string, parameters: Record<string, any>, callEventEmitter?: EventEmitter) {
+        const callFunction = toolList.find(i => i.toolName === toolName);
         if (callFunction) {
             try {
 
@@ -412,20 +457,17 @@ export default class BotBase extends EventEmitter {
         return JSON.stringify({ error: `Function ${toolName} not found.` });
     }
 
-    protected buildMessageWithContext(): OpenAI.Chat.ChatCompletionMessageParam[] {
-        const maxTokens = this.botCreateOptions?.max_context_length || 10;
-        const systemMessage = this.systemMessage
+    protected buildMessageWithMemory(): OpenAI.Chat.ChatCompletionMessageParam[] {
+        const maxTokens = this.botChatOptions?.max_context_length || 10;
 
-        const recentHistory = this.chatContexts.messages.slice(-(maxTokens * 2));
+        const recentHistory = this.botMemories.messages.slice(-(maxTokens * 2));
 
         const openaiMessage: OpenAI.Chat.ChatCompletionMessageParam[] = []
 
-        if (systemMessage) {
-            openaiMessage.push({
-                role: 'system',
-                content: systemMessage
-            })
-        }
+        openaiMessage.push({
+            role: 'system',
+            content: this.buildSystemMessage()
+        })
 
         for (const recent of recentHistory) {
             switch (recent.role) {
@@ -469,27 +511,80 @@ export default class BotBase extends EventEmitter {
         return openaiMessage;
     }
 
-    private pushContext(context: EXChatCompletionMessage) {
-        this.chatContexts.messages.push(context)
-        this.emit('chatContextUpdate', context)
+    public buildSystemMessage(): string {
+        let systemMessage = `${this.botRolePrompt || BotBase.DEFAULT_ROLE_PROMPT}`
+        if (this.currentSentiment) {
+            const sentimentPrompt: SentimentPrompt = this.botSentiments[this.currentSentiment]
+            if (sentimentPrompt?.prompt) {
+                systemMessage += `\n你现在的心情是${sentimentPrompt.sentiment},${sentimentPrompt.prompt}`
+            }
+        }
+        //更新系统存储
+        this.botMemories.system = systemMessage
+        return systemMessage
     }
 
-    public clearContexts() {
-        this.chatContexts.messages = []
-        this.chatContexts.latestActiveTime = Date.now()
+    public switchSentiment(sentiment: S): void {
+        if (!Object.keys(this.botSentiments).length) {
+            throw new Error("你没有可以切换的情绪")
+        }
+        if (!this.botSentiments[sentiment]) {
+            throw new Error(`情绪${sentiment}没有被定义`)
+        }
+        this.currentSentiment = sentiment
+    }
+
+    public clearSentiment(): void {
+        this.currentSentiment = null
+    }
+
+    private pushMemory(context: EXChatCompletionMessage) {
+        this.botMemories.messages.push(context)
+
+        this.emit('chatContextUpdate', context)
+        if (this.bindMemoriesFile) {
+            const dirname = path.dirname(this.bindMemoriesFile)
+            if (!fs.existsSync(dirname)) {
+                fs.mkdirSync(dirname, { recursive: true })
+            }
+            fs.writeFileSync(this.bindMemoriesFile, JSON.stringify(this.botMemories, null, 4), 'utf-8')
+        }
+    }
+
+    public importMemoryFromFile(filePath: string) {
+        if (fs.existsSync(filePath)) {
+            this.botMemories = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+            return true
+        }
+        return false
+    }
+
+    public exportMemoriesToFile(filePath: string) {
+        const dirname = path.dirname(filePath)
+        if (!fs.existsSync(dirname)) {
+            fs.mkdirSync(dirname, { recursive: true })
+        }
+        fs.writeFileSync(filePath, JSON.stringify(this.botMemories, null, 4), 'utf-8')
+    }
+
+    public clearMemories() {
+        this.botMemories.messages = []
+        this.botMemories.latestActiveTime = Date.now()
         this.emit('clearContext')
     }
 
-    public listContexts() {
-        return this.chatContexts
+    public listMemories() {
+        return this.botMemories
     }
 
     public newChat() {
-        this.clearContexts()
+        this.clearMemories()
         this.chatId = crypto.randomUUID()
         this.emit('newChat', this.chatId)
         if (this.helloText) {
             console.log(this.helloText)
         }
     }
+
+
 }

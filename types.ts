@@ -10,7 +10,7 @@ export interface ChatHistory {
     messages: OpenAI.Chat.ChatCompletionMessageParam[],
     latestActiveTime: number
 }
-export interface ChatBotCreateOptions {
+export interface ModelChatOptions {
     temperature?: number,
     max_completion_tokens?: number,
     max_context_length?: number
