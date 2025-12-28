@@ -2,6 +2,22 @@ import { createTool } from "../core/entry.ts";
 import os from 'node:os'
 import { getInstalledApps } from 'get-installed-apps';
 import notifier from 'node-notifier';
+import { promisify } from 'node:util';
+import { exec } from 'node:child_process';
+
+export interface ListProcessReturn {
+    name: string;
+    pid: number;
+    memUsage: string,
+}
+
+export interface DiskInfo {
+    drive: string;
+    totalSize: number;
+    freeSpace: number;
+}
+
+const execAsync = promisify(exec);
 
 interface InstalledAppItem {
     appIdentifier: string,
@@ -161,7 +177,7 @@ export default class ToolOS {
     public static readonly showSystemNotification = createTool<{
         title: string,
         message: string,
-        noticeType:'error' | 'info' | 'warn'
+        noticeType: 'error' | 'info' | 'warn'
     }, {}>('tool_os_showSystemNotification', async (notifierParams) => {
         const win = notifier.notify({
             title: notifierParams.title || "标题",
@@ -169,7 +185,7 @@ export default class ToolOS {
             sound: true,
             wait: true,
             time: 5000,
-            type:notifierParams.noticeType || 'info'
+            type: notifierParams.noticeType || 'info'
         })
         return {}
     }, {
@@ -185,14 +201,74 @@ export default class ToolOS {
                 type: 'string',
                 description: "显示的通知标题",
                 required: true,
-            },{
-                name:'noticeType',
-                type:'string',
-                description:'通知类型，不是必须的',
-                required:false,
-                enum:['error','info','warn']
+            }, {
+                name: 'noticeType',
+                type: 'string',
+                description: '通知类型，不是必须的',
+                required: false,
+                enum: ['error', 'info', 'warn']
             }
         ],
         description: "给用户发送系统通知消息，这个函数不会返回任何内容"
+    })
+
+    public static readonly getCurrentDeviceUser = createTool<{}, string>('tool_shell_getCurrentDeviceUser', async () => {
+        const { stdout } = await execAsync('whoami')
+        return stdout.split('\n').filter(Boolean)?.[0]
+    }, {
+        parameters: [],
+        description: "获取当前设备登录的用户名"
+    })
+
+    public static readonly openPerformanceMonitor = createTool<{}, string>('tool_shell_openPerformanceMonitor', async () => {
+        const { stdout } = await execAsync('perfmon')
+        return 'ok'
+    }, {
+        parameters: [],
+        description: "打开系统性能监视器，不会返回任何结果"
+    })
+
+    public static readonly getDisk = createTool<{}, DiskInfo[]>('tool_shell_getDisk', async () => {
+
+        const { stdout } = await execAsync('wmic logicaldisk get caption,size,freespace /format:csv')
+
+        const lines = stdout.split('\r\n').slice(1);
+
+        const disks = lines
+            .filter(line => line.trim() !== '')
+            .map(line => {
+                const [, caption, size, freespace] = line.split(',');
+                return {
+                    drive: caption.replace(':', ''),
+                    totalSize: (parseInt(size) || 0),
+                    freeSpace: (parseInt(freespace) || 0),
+                };
+            });
+
+        return disks;
+    }, {
+        parameters: [],
+        description: "获取用户当前设备的磁盘信息，容量，可用空间"
+    })
+
+    public static readonly showMessageBox = createTool<{ title: string, message: string }, {}>('tool_os_showMessageBox', async (messageParams) => {
+        await execAsync(`mshta "javascript:var sh=new ActiveXObject("WScript.Shell"); sh.Popup("${messageParams.message}", 10, "${messageParams.title}", 64 );close()"`)
+        return {}
+    }, {
+        parameters: [
+            {
+                name: 'message',
+                description: "你希望发送的消息内容",
+                type: 'string',
+                required: true,
+            },
+            {
+                name: 'title',
+                description: "你希望发送的消息标题",
+                type: 'string',
+                required: true
+            }
+        ],
+        description: "发送一条系统消息弹窗提醒用户"
     })
 }
