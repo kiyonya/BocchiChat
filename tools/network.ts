@@ -46,6 +46,15 @@ export interface CheckUrlAccessibilityReturns {
     errorMessage?: string;
 }
 
+interface httpRequestParams {
+    method?: 'get' | 'post' | 'head'
+    url: string,
+    headers?: Record<string, any>,
+    data?: any,
+    responseType?: 'json' | 'document' | 'formdata',
+    maxRedirects?: number
+}
+
 export default class ToolNetwork {
 
     private static readonly _DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
@@ -321,5 +330,65 @@ export default class ToolNetwork {
         description: "检查URL是否可访问。返回是否可达、HTTP状态码、响应时间和错误信息（如果有）。注意：403/401等状态码会被视为可达（URL存在），但会包含错误信息。"
     })
 
-    
+    public static readonly httpRequest = createTool<httpRequestParams, HttpRequestReturns>('tool_network_httpRequest', async (httpRequestParams) => {
+        const req = await axios.request({
+            url: httpRequestParams.url,
+            method: httpRequestParams.method || 'GET',
+            data: httpRequestParams.data,
+            headers: {
+                "User-Agent": this._DEFAULT_USER_AGENT,
+                ...(httpRequestParams.headers)
+            },
+            responseType: httpRequestParams.responseType || 'json',
+            maxRedirects: httpRequestParams.maxRedirects || 10
+        })
+        const code = req.status
+        return {
+            code: code,
+            body: req.data
+        }
+    }, {
+        parameters: [
+            {
+                name: 'url',
+                type: 'string',
+                description: "需要发送请求的url地址",
+                required: true
+            },
+            {
+                name: 'method',
+                description: "请求的方法,不是必须的",
+                required: false,
+                type: 'string',
+                enum: ['GET', 'POST', 'HEAD']
+            },
+            {
+                name: 'headers',
+                description: "请求的请求头,不是必须的",
+                required: false,
+                type: 'object'
+            },
+            {
+                name: 'maxRedirects',
+                description: "最大重定向次数，不是必须的",
+                required: false,
+                type: 'number',
+            },
+            {
+                name: 'responseType',
+                type: 'string',
+                description: "数据的返回类型，不是必须的，默认为json",
+                required: false,
+                enum: ['json', 'formdata', 'document']
+            },
+            {
+                name: 'data',
+                type: 'string',
+                description: "当POST请求的时候需要提交的数据内容,不是必须的",
+                required: false,
+            }
+        ],
+        description: "对一个url发送get，post，head请求，返回{code:number,body:any},请求失败会报错"
+    })
+
 }

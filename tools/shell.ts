@@ -114,4 +114,6 @@ export default class ToolShell {
         parameters: [],
         description: "列出所有环境变量"
     });
+
+   
 }
