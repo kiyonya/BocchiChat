@@ -34,3 +34,52 @@ export interface ChatCompletionToolMessageParamExtend extends OpenAI.Chat.Comple
 }
 export type EXChatCompletionMessage = ChatCompletionDeveloperMessageParamExtend | ChatCompletionSystemMessageParamExtend | ChatCompletionUserMessageParamExtend | ChatCompletionAssistantMessageParamExtend |
 ChatCompletionToolMessageParamExtend
+
+export type CompletionMessage = ChatCompletionDeveloperMessageParamExtend | ChatCompletionSystemMessageParamExtend | ChatCompletionUserMessageParamExtend | ChatCompletionAssistantMessageParamExtend |
+ChatCompletionToolMessageParamExtend
+
+export interface DialogueItem {
+    messages:CompletionMessage[],
+    timestamp:number,
+    usage:number
+}
+
+export interface BotChatContexts {
+    dialogues:DialogueItem[],
+    chatId:string,
+    systemPrompt:string,
+    latestActiveTime: number,
+}
+
+export interface SentimentPrompt {
+    sentiment: string,
+    prompt: string
+}
+
+export interface ModelOptions {
+    temperature?:number,
+    maxCompletionTokens?:number,
+    maxSessionLength?:number,
+    topP?:number,
+    parallelToolCalls?:boolean
+}
+
+export interface BotDefination {
+    botId:string,
+    botName:string,
+    modelOptions:ModelOptions ,
+    role?:{
+        rolePrompt?:string,
+        roleSentiments?:Record<string,SentimentPrompt>,
+        helloText?:string,
+    },
+    config?:{
+        enableAISentimentSwitch?:boolean,
+        enableMemory?:boolean,
+        contextStoreFile?:string,
+    }
+}
+
+export interface ChatConfig {
+    memorySimplify?:boolean
+}

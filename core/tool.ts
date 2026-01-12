@@ -1,125 +1,186 @@
-import EventEmitter from "events";
+
 import OpenAI from "openai"
+import z from "zod";
 
-export interface ToolParameter<T = any> {
-    name: keyof T & string,
-    type: "string" | "number" | "integer" | "boolean" | "array" | "object",
-    description: string,
-    required?: boolean,
-    enum?: any[]
+interface MCPToolIOSchema {
+    [x: string]: unknown;
+    type: "object";
+    properties?: {
+        [x: string]: object;
+    } | undefined;
+    required?: string[] | undefined;
 }
 
-export interface ToolEvents {
-    runtimeEvent: (...args: any[]) => void,
+export type MCPToolInputSchemaLike = MCPToolIOSchema
+export type MCPToolOutputSchemaLike = MCPToolIOSchema
+type PermissionChecker = () => boolean | Promise<boolean>
+type IPermissions = Record<string,PermissionChecker>
 
+class ToolBase<ToolParams extends Record<string, any> = Record<string, any>, ToolResult = any,Permissions = IPermissions> {
+    protected executor: ((params: ToolParams,permission:Permissions) => ToolResult | Promise<ToolResult>) | null = null;
+    public toolName: string = '';
+    public description: string = '';
 }
 
-export default class ToolBase<TParams extends Record<string, any> = any, TResult = any> extends EventEmitter {
+export class LocalTool<ToolParams extends Record<string, any> = {}, ToolResult = any,Permissions = IPermissions> extends ToolBase<ToolParams, ToolResult,Permissions> {
 
-    on<K extends keyof ToolEvents>(
-        event: K,
-        listener: ToolEvents[K]
-    ): this {
-        return super.on(event as string, listener);
-    }
+    protected executor: ((params: ToolParams,permission:Permissions) => ToolResult | Promise<ToolResult>) | null = null;
+    public toolName: string = '';
+    public description: string = '';
+    private paramsSchema: Record<keyof ToolParams, z.ZodTypeAny> | null = null;
+    private zodSchema: z.ZodObject<Record<keyof ToolParams, z.ZodTypeAny>> | null = null;
+    private returnsSchema?: z.ZodAny
 
-    once<K extends keyof ToolEvents>(
-        event: K,
-        listener: ToolEvents[K]
-    ): this {
-        return super.once(event as string, listener);
-    }
+    public permissions:Permissions = {} as Permissions
 
-    emit<K extends keyof ToolEvents>(
-        event: K,
-        ...args: Parameters<(ToolEvents)[K]>
-    ): boolean {
-        return super.emit(event as string, ...args);
-    }
+    
 
-    public parameters: ToolParameter<TParams>[] = [];
-    public toolName: string = 'default_tool';
-    public toolDescription: string = '';
-
-    protected executor: ((params: TParams) => Promise<TResult>) | null = null;
-
-    constructor(toolName: string) {
+    constructor(toolName: string, description: string, executor: (params: ToolParams,permission:Permissions) => ToolResult | Promise<ToolResult>, paramsSchema: Record<keyof ToolParams, z.ZodTypeAny>, returnsSchema?: z.ZodAny) {
         super()
         this.toolName = toolName;
-    }
-
-    public defineParameters(parameters: ToolParameter<TParams>[]): this {
-        this.parameters = parameters;
-        return this;
-    }
-
-    public defineDescription(description: string): this {
-        this.toolDescription = description;
-        return this;
-    }
-
-    public defineExecutor(executor: (params: TParams) => Promise<TResult>): this {
+        this.description = description;
         this.executor = executor;
-        return this;
+        this.paramsSchema = paramsSchema;
+        this.zodSchema = z.object(paramsSchema);
+        this.returnsSchema = returnsSchema
     }
 
-    public async execute(parameters: TParams): Promise<TResult> {
-        try {
-            this.validateParameters(parameters);
-
-            if (this.executor) {
-                return await this.executor(parameters);
-            }
-
-            throw new Error(`No executor defined for tool ${this.toolName}`);
-        } catch (error) {
-            console.error(`Error executing tool ${this.toolName}:`, error);
-            throw error;
-        }
+    public setPermission(permission:Permissions){
+        this.permissions = permission
     }
 
-    protected validateParameters(parameters: TParams): void {
-        const requiredParams = this.parameters
-            .filter(param => param.required ?? true)
-            .map(param => param.name);
-
-        for (const requiredParam of requiredParams) {
-            if (!(requiredParam in parameters)) {
-                throw new Error(`Missing required parameter: ${requiredParam}`);
-            }
+    public async execute(params: ToolParams): Promise<ToolResult> {
+        if (!this.executor) {
+            throw new Error('Executor not initialized');
         }
+        if (this.zodSchema) {
+            const validatedParams = this.zodSchema.parse(params) as ToolParams;
+            return await this.executor(validatedParams,this.permissions);
+        }
+        return await this.executor(params,this.permissions);
     }
 
     public toOpenAITool(): OpenAI.Chat.ChatCompletionFunctionTool {
-        const chatCompletionFunctionTool: OpenAI.Chat.ChatCompletionFunctionTool = {
+        if (!this.paramsSchema) {
+            throw new Error('Params schema not initialized');
+        }
+        const properties: Record<string, any> = {};
+        const required: string[] = [];
+        Object.entries(this.paramsSchema).forEach(([key, schema]) => {
+            if (schema instanceof z.ZodType) {
+                const openAIProps = this.zodTypeToOpenAI(schema);
+                properties[key] = openAIProps;
+                if (!schema.safeParse(undefined).success && !(schema instanceof z.ZodDefault)) {
+                    required.push(key);
+                }
+            }
+        });
+
+        return {
             type: 'function',
             function: {
                 name: this.toolName,
-                description: this.toolDescription
-            }
+                description: this.description,
+                parameters: {
+                    type: 'object',
+                    properties,
+                    required,
+                },
+            },
         };
+    }
 
-        const properties: Record<string, any> = {};
-        const requiredParams: string[] = [];
+    private zodTypeToOpenAI(zodSchema: z.ZodTypeAny): Record<string, any> {
+        const result: Record<string, any> = {};
+        if (zodSchema instanceof z.ZodString) {
+            result.type = 'string';
+            const checks = (zodSchema as any)._def.checks || [];
+            checks.forEach((check: any) => {
+                if (check.kind === 'min') {
+                    result.minLength = check.value;
+                } else if (check.kind === 'max') {
+                    result.maxLength = check.value;
+                }
+            });
+        } else if (zodSchema instanceof z.ZodNumber) {
+            result.type = 'number';
+            const checks = (zodSchema as any)._def.checks || [];
+            checks.forEach((check: any) => {
+                if (check.kind === 'min') {
+                    result.minimum = check.value;
+                } else if (check.kind === 'max') {
+                    result.maximum = check.value;
+                }
+            });
+        } else if (zodSchema instanceof z.ZodBoolean) {
+            result.type = 'boolean';
+        } else if (zodSchema instanceof z.ZodArray) {
+            result.type = 'array';
+            result.items = this.zodTypeToOpenAI((zodSchema as z.ZodArray<any>).element);
+        } else if (zodSchema instanceof z.ZodEnum) {
+            result.type = 'string';
+            result.enum = (zodSchema as z.ZodEnum<any>).options;
+        } else if (zodSchema instanceof z.ZodObject) {
+            result.type = 'object';
+            const shape = (zodSchema as z.ZodObject<any>).shape;
+            result.properties = {};
+            result.required = [];
 
-        for (const param of this.parameters) {
-            const paramName = param.name;
-            properties[paramName] = {
-                type: param.type,
-                description: param.description,
-                ...(param.enum ? { enum: param.enum } : {})
-            };
-            if (param.required ?? true) {
-                requiredParams.push(paramName);
+            Object.entries(shape).forEach(([key, nestedSchema]) => {
+                result.properties[key] = this.zodTypeToOpenAI(nestedSchema as z.ZodTypeAny);
+                if (!(nestedSchema as z.ZodTypeAny).safeParse(undefined).success) {
+                    result.required.push(key);
+                }
+            });
+
+        } else if (zodSchema instanceof z.ZodOptional || zodSchema instanceof z.ZodDefault) {
+            const innerType = (zodSchema as any)._def.innerType;
+            return this.zodTypeToOpenAI(innerType);
+        } else if (zodSchema instanceof z.ZodUnion) {
+            const options = (zodSchema as z.ZodUnion<any>).options;
+            if (options.length > 0) {
+                return this.zodTypeToOpenAI(options[0]);
             }
+        } else {
+            result.type = 'string';
         }
 
-        chatCompletionFunctionTool.function.parameters = {
-            type: "object",
-            properties: properties,
-            ...(requiredParams.length > 0 && { required: requiredParams })
-        };
+        return result;
+    }
+}
 
-        return chatCompletionFunctionTool;
+export class MCPTool<ToolParams extends Record<string, any> = {}, ToolResult = any> extends ToolBase<ToolParams, ToolResult> {
+
+    protected executor: (params: ToolParams) => Promise<ToolResult> | ToolResult;
+    public toolName: string
+    public description: string = ''
+    public inputSchema: MCPToolInputSchemaLike
+    public outputSchema?: MCPToolOutputSchemaLike
+
+    constructor(toolName: string, description: string, executor: (params: ToolParams) => Promise<ToolResult> | ToolResult, inputSchema: MCPToolInputSchemaLike, outputSchema?: MCPToolOutputSchemaLike) {
+        super()
+        this.toolName = toolName
+        this.description = description
+        this.executor = executor
+        this.inputSchema = inputSchema
+        this.outputSchema = outputSchema
+    }
+
+    public async execute(params: ToolParams): Promise<ToolResult> {
+        if (!this.executor) {
+            throw new Error('Executor not initialized');
+        }
+        return await this.executor(params);
+    }
+
+    public toOpenAITool(): OpenAI.Chat.ChatCompletionFunctionTool {
+        return {
+            type: 'function',
+            function: {
+                name: this.toolName,
+                description: this.description,
+                parameters: this.inputSchema
+            },
+        }
     }
 }

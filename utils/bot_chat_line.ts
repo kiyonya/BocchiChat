@@ -1,14 +1,10 @@
-import BotBase from "../core/bot.ts";
+import Agent from "../core/agent.ts";
 import readline from 'readline'
 
-export function botChatLine(bot: BotBase) {
+export function botChatLine(bot: Agent) {
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
-    })
-    bot.on('responseDelta', (chunk, delta, payload) => {
-        delta = delta.replaceAll("</think>", "\n")
-        process.stdout.write(`\x1b[32m${delta}\x1b[0m`);
     })
     const doConversation = async () => {
         rl.question('', async (userInput) => {
@@ -19,8 +15,13 @@ export function botChatLine(bot: BotBase) {
                 return;
             }
             try {
-                const response = await bot.chatStream(input);
-                console.log(`\n\x1b[33m使用token:${response.usage?.total_tokens}\x1b[0m`)
+                const response = await bot.chatStream(input,
+                    (chunk, delta, payload) => {
+                        delta = delta.replaceAll("</think>", "\n")
+                        process.stdout.write(`\x1b[32m${delta}\x1b[0m`);
+                    }
+                );
+                console.log(`\n\x1b[33m使用token:${response?.usage.total_tokens}\x1b[0m`)
             } catch (error) {
                 console.error('错误:', error);
             }

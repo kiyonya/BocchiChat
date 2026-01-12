@@ -1,0 +1,18 @@
+{
+    "roleDefination": "./bots/tohou/kirisame_marisa.json",
+    "chatConfig": {},
+    "mcpServers": {
+        "bilibili": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/your-project-path/bilibili-mcp-server",
+                "run",
+                "bilibili.py"
+            ],
+            "env":{
+                
+            }
+        }
+    }
+}
