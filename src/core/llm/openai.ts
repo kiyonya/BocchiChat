@@ -6,7 +6,7 @@ import path from "path"
 import { existify } from "../../utils/file.ts"
 import { writeFileSync } from "fs"
 import chalk from 'chalk'
-import {cristal} from 'gradient-string'
+import { cristal } from 'gradient-string'
 
 export interface LLMRoleDefination {
     rolePrompt: string
@@ -31,8 +31,9 @@ export interface LLMModelOptions {
     parallelToolCalls?: boolean
 }
 export interface LLMConfig {
-     useDefaultSystemPromptHead?: boolean,
-     useContextsSimplify?:boolean
+    useDefaultSystemPromptHead?: boolean,
+    useContextsSimplify?: boolean,
+    noMemoryContexts?: boolean
 }
 
 interface OpenAILLMCreateOptions {
@@ -41,8 +42,8 @@ interface OpenAILLMCreateOptions {
     roleDefination?: LLMRoleDefination,
     llmModelOptions?: LLMModelOptions,
     openAIClient?: OpenAI,
-    llmTools?:  Map<string, MCPTool | LocalTool>
-    llmConfig?:LLMConfig
+    llmTools?: Map<string, MCPTool | LocalTool>
+    llmConfig?: LLMConfig
 }
 
 export default class OpenAILLM extends EventEmitter {
@@ -60,15 +61,15 @@ export default class OpenAILLM extends EventEmitter {
     public llmToolsMap: Map<string, MCPTool | LocalTool> = new Map()
     public builtToolCalls: OpenAI.Chat.ChatCompletionFunctionTool[] = []
 
-    public llmConfig?:LLMConfig
+    public llmConfig?: LLMConfig
 
     constructor(options: OpenAILLMCreateOptions) {
         super()
 
         this.name = options.name
         this.openAIClient = options.openAIClient || new OpenAI({
-            baseURL:process.env.BASE_URL,
-            apiKey:process.env.APIKEY
+            baseURL: process.env.BASE_URL,
+            apiKey: process.env.APIKEY
         })
         this.llmContexts = options.llmContext || this._createNewContext()
         this.roleDefination = options.roleDefination || OpenAILLM.DEFAULT_ROLE_DEFINATION
@@ -76,18 +77,15 @@ export default class OpenAILLM extends EventEmitter {
 
         if (options.llmTools) {
             this.llmToolsMap = options.llmTools
-            for(const tool of options.llmTools.values()){
+            for (const tool of options.llmTools.values()) {
                 this.builtToolCalls.push(tool.toOpenAITool())
             }
         }
-        console.log(cristal(`已注册工具 ${this.builtToolCalls.map(i=>i.function.name).join('  ')}`))
+        console.log(cristal(`已注册工具 ${this.builtToolCalls.map(i => i.function.name).join('  ')}`))
         this.llmConfig = options.llmConfig
     }
 
-    public async chatStream(userPrompt: string, onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string,
-        payload: string,) => void, onSessionUpdate?: (dialogue: LLMSession) => void): Promise<LLMSession> {
-
-        this.llmContexts.latestActive = Date.now()
+    public async chatStream(userPrompt: string, onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string,) => void, onSessionUpdate?: (dialogue: LLMSession) => void, mode: 'context' | 'sessionOnly' | 'sessionIsolation' = this.llmConfig?.noMemoryContexts ? 'sessionOnly' : 'context'): Promise<LLMSession> {
 
         const session: LLMSession = {
             usage: {
@@ -99,7 +97,10 @@ export default class OpenAILLM extends EventEmitter {
             sessionId: Date.now()
         }
 
-        this.llmContexts.sessions.push(session)
+        if (mode === 'context') {
+            this.llmContexts.latestActive = Date.now()
+            this.llmContexts.sessions.push(session)
+        }
 
         session.messages.push({
             role: 'user',
@@ -111,8 +112,9 @@ export default class OpenAILLM extends EventEmitter {
             onSessionUpdate(session)
         }
 
-        const completion = await this._chatStreamRecursive(session, onResponse, onSessionUpdate)
-        if(completion.usage){
+        const completion = await this._chatStreamRecursive(session, onResponse, onSessionUpdate, mode)
+
+        if (completion.usage) {
             session.usage = completion.usage
         }
         if (onSessionUpdate) {
@@ -122,7 +124,23 @@ export default class OpenAILLM extends EventEmitter {
         return session
     }
 
-    private async _chatStreamRecursive(session: LLMSession, onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string,) => void, onSessionUpdate?: (session: LLMSession) => void): Promise<OpenAI.Chat.ChatCompletion> {
+    private async _chatStreamRecursive(session: LLMSession, onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string,) => void, onSessionUpdate?: (session: LLMSession) => void, mode: 'context' | 'sessionOnly' | 'sessionIsolation' = 'context'): Promise<OpenAI.Chat.ChatCompletion> {
+
+        const messages: OpenAI.Chat.ChatCompletionMessageParam[] = []
+
+        switch (mode) {
+            case "context":
+                messages.push(...this._buildMessageWithContext())
+                break
+            case "sessionOnly":
+                messages.push(...this._buildMessageWithSession(session))
+                break
+            case "sessionIsolation":
+                messages.push(...this._buildMessageWithContext(), ...this._buildMessageWithSession(session))
+                break
+            default:
+                messages.push(...this._buildMessageWithContext())
+        }
 
         const openaiChatStreamCreateOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming =
         {
@@ -130,12 +148,12 @@ export default class OpenAILLM extends EventEmitter {
             max_completion_tokens: this.llmModelOptions?.maxCompletionTokens ?? 1024,
             temperature: this.llmModelOptions?.temperature ?? 0.3,
             top_p: this.llmModelOptions?.topP,
-            messages: this._buildMessageWithContext(),
+            messages: messages,
             stream: true,
             tools: this.builtToolCalls,
             prompt_cache_retention: '24h',
             tool_choice: 'auto',
-            parallel_tool_calls: this.llmModelOptions?.parallelToolCalls ?? true
+            parallel_tool_calls: this.llmModelOptions?.parallelToolCalls ?? true,
         }
 
         this.emit('chatCreate', openaiChatStreamCreateOptions)
@@ -288,10 +306,169 @@ export default class OpenAILLM extends EventEmitter {
             ],
             usage: usage
         }
-
-        
-
         return chatCompletion
+    }
+
+    public async chat(userPrompt: string, onSessionUpdate?: (session: LLMSession) => void, mode: 'context' | 'sessionOnly' | 'sessionIsolation' = this.llmConfig?.noMemoryContexts ? 'sessionOnly' : 'context'):Promise<LLMSession> {
+        const session: LLMSession = {
+            usage: {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0
+            },
+            messages: [],
+            sessionId: Date.now()
+        }
+
+        if (mode === 'context') {
+            this.llmContexts.latestActive = Date.now()
+            this.llmContexts.sessions.push(session)
+        }
+
+        session.messages.push({
+            role: 'user',
+            content: userPrompt,
+            chatTime: Date.now()
+        })
+
+        if (onSessionUpdate) {
+            onSessionUpdate(session)
+        }
+
+        const completion = await this._chatRecusive(session, onSessionUpdate, mode)
+
+        if (completion.usage) {
+            session.usage = completion.usage
+        }
+
+        if (onSessionUpdate) {
+            onSessionUpdate(session)
+        }
+
+        return session
+
+    }
+
+    private async _chatRecusive(session: LLMSession, onSessionUpdate?: (session: LLMSession) => void, mode: 'context' | 'sessionOnly' | 'sessionIsolation' = 'context'): Promise<OpenAI.Chat.ChatCompletion> {
+
+        const messages: OpenAI.Chat.ChatCompletionMessageParam[] = []
+
+        switch (mode) {
+            case "context":
+                messages.push(...this._buildMessageWithContext())
+                break
+            case "sessionOnly":
+                messages.push(...this._buildMessageWithSession(session))
+                break
+            case "sessionIsolation":
+                messages.push(...this._buildMessageWithContext(), ...this._buildMessageWithSession(session))
+                break
+            default:
+                messages.push(...this._buildMessageWithContext())
+        }
+
+        const openaiChatCreateOptions: OpenAI.Chat.Completions.ChatCompletionCreateParams =
+        {
+            model: process.env.MODEL_NAME ?? 'gpt-4',
+            max_completion_tokens: this.llmModelOptions?.maxCompletionTokens ?? 1024,
+            temperature: this.llmModelOptions?.temperature ?? 0.3,
+            top_p: this.llmModelOptions?.topP,
+            messages: messages,
+            stream: false,
+            tools: this.builtToolCalls,
+            prompt_cache_retention: '24h',
+            tool_choice: 'auto',
+            parallel_tool_calls: this.llmModelOptions?.parallelToolCalls ?? true
+        }
+
+        const completion = await this.openAIClient.chat.completions.create(openaiChatCreateOptions)
+
+        this.emit('chatCreate', openaiChatCreateOptions)
+
+        const choice = completion.choices[0];
+
+        if (choice && choice.message) {
+            const assistantMsg: CompletionMessage = {
+                role: 'assistant',
+                content: choice.message.content || '',
+                tool_calls: choice.message.tool_calls,
+                chatTime: Date.now()
+            };
+
+            session.messages.push(assistantMsg)
+            if (onSessionUpdate) {
+                onSessionUpdate(session)
+            }
+
+            if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls?.length) {
+                for (const toolCall of choice.message.tool_calls) {
+                    if (toolCall.type === 'function') {
+                        try {
+                            const callName = toolCall.function.name
+                            const callArguments = JSON.parse(toolCall.function.arguments)
+
+                            this.emit('toolCall', callName, callArguments)
+
+                            const callResult = await this._callTool(callName, callArguments)
+
+                            const toolCallMessage: CompletionMessage = {
+                                role: 'tool',
+                                content: typeof callResult === 'string' ? callResult : JSON.stringify(callResult),
+                                tool_call_id: toolCall.id,
+                                chatTime: Date.now()
+                            }
+
+                            session.messages.push(toolCallMessage)
+
+                            if (onSessionUpdate) {
+                                onSessionUpdate(session)
+                            }
+
+                        } catch (error) {
+                            this.emit('toolCallError', error)
+
+                            const toolCallErrorMessage: CompletionMessage = {
+                                role: 'tool',
+                                content: JSON.stringify({
+                                    error: 'Failed to execute function arguments parse error'
+                                }),
+                                tool_call_id: toolCall.id,
+                                chatTime: Date.now()
+                            }
+
+                            session.messages.push(toolCallErrorMessage)
+
+                            if (onSessionUpdate) {
+                                onSessionUpdate(session)
+                            }
+                        }
+                    }
+                }
+                return await this._chatRecusive(session, onSessionUpdate, mode);
+            }
+        }
+
+        const chatCompletion: OpenAI.Chat.Completions.ChatCompletion = {
+            id: '',
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: process.env.MODEL_NAME || 'gpt-4',
+            choices: [
+                {
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: choice.message?.content || '',
+                        refusal: null,
+                        tool_calls: choice.message?.tool_calls
+                    },
+                    finish_reason: choice.finish_reason || 'stop',
+                    logprobs: null
+                }
+            ],
+            usage: completion.usage
+        }
+        return chatCompletion;
     }
 
     private _buildMessageWithContext(): OpenAI.Chat.ChatCompletionMessageParam[] {
@@ -371,13 +548,63 @@ export default class OpenAILLM extends EventEmitter {
         return openaiMessage
     }
 
+    private _buildMessageWithSession(session: LLMSession): OpenAI.Chat.ChatCompletionMessageParam[] {
+        const openaiMessage: OpenAI.Chat.ChatCompletionMessageParam[] = []
+
+        openaiMessage.push({
+            role: 'system',
+            content: this._buildSystemMessage()
+        })
+
+        for (const message of session.messages) {
+            switch (message.role) {
+                case 'developer':
+                    openaiMessage.push({
+                        role: 'developer',
+                        content: message.content,
+                        name: message.name
+                    })
+                    break
+                case 'user':
+                    openaiMessage.push({
+                        role: 'user',
+                        content: message.content,
+                        name: message.name
+                    })
+                    break
+                case 'assistant':
+                    const assistantMsg: OpenAI.Chat.ChatCompletionAssistantMessageParam = {
+                        role: 'assistant',
+                        content: message.content,
+                        name: message.name
+                    }
+                    if (message.tool_calls) {
+                        assistantMsg.tool_calls = message.tool_calls
+                    }
+                    openaiMessage.push(assistantMsg)
+                    break
+                case 'tool':
+                    openaiMessage.push({
+                        role: 'tool',
+                        content: message.content,
+                        tool_call_id: message.tool_call_id
+                    })
+                    break
+                default:
+                    console.warn('Unrecognized message role encountered')
+            }
+        }
+
+        return openaiMessage
+    }
+
     private _buildSystemMessage(): string {
         let systemPromptContent = this.llmConfig?.useDefaultSystemPromptHead ?? true ? `现在的时间是${this._getLocalDate()}\n` : ''
         systemPromptContent += this.roleDefination.rolePrompt
         return systemPromptContent
     }
 
-    private _getLocalDate():string{
+    private _getLocalDate(): string {
         const date = new Date()
         return date.toLocaleString()
     }
@@ -406,10 +633,14 @@ export default class OpenAILLM extends EventEmitter {
         return llmContexts
     }
 
-    public saveContextsToFile(filePath:string){
+    public saveContextsToFile(filePath: string) {
         const dirname = path.dirname(filePath)
         existify(dirname)
-        writeFileSync(filePath,JSON.stringify(this.llmContexts,null,2),'utf-8')
+        writeFileSync(filePath, JSON.stringify(this.llmContexts, null, 2), 'utf-8')
+    }
+
+    public pushSession(session: LLMSession) {
+        this.llmContexts.sessions.push(session)
     }
 
 }

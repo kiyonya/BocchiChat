@@ -5,7 +5,6 @@ import { LocalTool, MCPTool } from "./tool.ts";
 import Toolkit from "./toolkit.ts";
 
 import fs from 'fs'
-import path from "path";
 import OpenAI from "openai";
 import { type StdioServerParameters } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -24,12 +23,15 @@ export default class Agent extends EventEmitter {
     public llmContexts?: LLMContexts
     public llmModelOptions?: LLMModelOptions
     public llm: OpenAILLM | null = null
-    public llmChatOptions?:LLMConfig
+    public llmChatOptions?: LLMConfig
 
     public llmContextsDumpFile?: string
 
     public isGenerating: boolean = false
-    constructor(agentName: string, context?: LLMContextsFileORContexts, roleDefination?: LLMRoleDefination, llmModelOptions?: LLMModelOptions,llmChatOptions?:LLMConfig) {
+    public isInit: boolean = false
+
+    constructor(agentName: string, context?: LLMContextsFileORContexts, roleDefination?: LLMRoleDefination, llmModelOptions?: LLMModelOptions, llmChatOptions?: LLMConfig) {
+
         super()
         this.agentName = agentName
         this.roleDefination = roleDefination
@@ -48,7 +50,6 @@ export default class Agent extends EventEmitter {
         else {
             this.llmContexts = context
         }
-
     }
 
     public defineMCPService(services: Record<string, URL | StdioServerParameters>) {
@@ -59,11 +60,19 @@ export default class Agent extends EventEmitter {
         this.toolkits = toolkits
     }
 
+    public addToolkit(toolKit: Toolkit<any>) {
+        this.toolkits.push(toolKit)
+    }
+
     public defineMCPToolkits(mcpToolkits: MCPToolkit[]) {
         this.mcpToolkits = mcpToolkits
     }
 
     public async whenReady() {
+
+        if (this.isInit) {
+            return
+        }
 
         try {
             const tools: (LocalTool | MCPTool)[] = this.toolkits.map(i => i.toToolList()).flat()
@@ -98,17 +107,18 @@ export default class Agent extends EventEmitter {
                 llmContext: this.llmContexts,
                 llmModelOptions: this.llmModelOptions,
                 llmTools: this.agentToolsMap,
-                llmConfig:this.llmChatOptions
+                llmConfig: this.llmChatOptions
             })
 
             this.llm = llm
+            this.isInit = true
 
         } catch (error) {
 
         }
 
     }
-    public async chatStream(userPrompt: string, onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string,) => void, onSessionUpdate?: (dialogue: LLMSession) => void): Promise<LLMSession | null> {
+    public async chatStream(userPrompt: string, onResponse?: (chunk: OpenAI.Chat.Completions.ChatCompletionChunk, delta: string, payload: string,) => void, onSessionUpdate?: (dialogue: LLMSession) => void, mode: "context" | "sessionOnly" | "sessionIsolation" = 'context'): Promise<LLMSession | null> {
         if (!this.llm) {
             throw new Error("缺少LLM")
         }
@@ -116,11 +126,34 @@ export default class Agent extends EventEmitter {
             return null
         }
         this.isGenerating = true
-        const session = await this.llm.chatStream(userPrompt, onResponse, onSessionUpdate)
+        const session = await this.llm.chatStream(userPrompt, onResponse, onSessionUpdate, mode)
         if (this.llmContextsDumpFile) {
             this.llm?.saveContextsToFile(this.llmContextsDumpFile)
         }
         this.isGenerating = false
         return session
+    }
+
+    public async chat(userPrompt: string, onSessionUpdate?: (session: LLMSession) => void, mode: 'context' | 'sessionOnly' | 'sessionIsolation' = 'context'): Promise<LLMSession | null> {
+        if (!this.llm) {
+            throw new Error("缺少LLM")
+        }
+        if (this.isGenerating) {
+            return null
+        }
+        this.isGenerating = true
+        const session = await this.llm.chat(userPrompt, onSessionUpdate, mode)
+        if (this.llmContextsDumpFile) {
+            this.llm?.saveContextsToFile(this.llmContextsDumpFile)
+        }
+        this.isGenerating = false
+        return session
+    }
+
+    public pushSessionState(session: LLMSession) {
+        this.llm?.pushSession(session)
+        if (this.llmContextsDumpFile) {
+            this.llm?.saveContextsToFile(this.llmContextsDumpFile)
+        }
     }
 }
